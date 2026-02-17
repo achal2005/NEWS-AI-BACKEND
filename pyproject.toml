@@ -1,0 +1,27 @@
+[project]
+name = "news-backend"
+version = "1.0.0"
+description = "AI News Aggregation Backend"
+requires-python = ">=3.11"
+
+[tool.pyright]
+pythonVersion = "3.11"
+venvPath = "."
+venv = "venv"
+include = ["."]
+extraPaths = ["."]
+typeCheckingMode = "basic"
+reportMissingImports = "warning"
+reportMissingTypeStubs = false
+reportOptionalMemberAccess = "warning"
+reportOptionalSubscript = "warning"
+reportOptionalCall = "warning"
+reportUnknownMemberType = false
+reportUnknownVariableType = false
+reportUnknownArgumentType = false
+reportGeneralTypeIssues = "warning"
+reportOperatorIssue = false
+
+[tool.pylance]
+typeCheckingMode = "basic"
+
