@@ -261,19 +261,37 @@ async def get_article_summary(
         return existing_summary
     
     # Generate new summary
-    summary_text = await gemini_service.generate_summary(article.content, mode)
-    
-    # Cache the summary
-    new_summary = ArticleSummary(
-        article_id=article_id,
-        mode=mode,
-        summary=summary_text
-    )
-    db.add(new_summary)
-    db.commit()
-    db.refresh(new_summary)
-    
-    return new_summary
+    try:
+        summary_text = await gemini_service.generate_summary(article.content, mode)
+        
+        # Cache the summary
+        new_summary = ArticleSummary(
+            article_id=str(article_id),
+            mode=mode,
+            summary=summary_text
+        )
+        db.add(new_summary)
+        db.commit()
+        db.refresh(new_summary)
+        
+        return new_summary
+    except Exception as e:
+        db.rollback()
+        # Return un-cached fallback so the user still sees something
+        return {
+            "mode": mode,
+            "summary": _fallback_summary(article.content),
+            "generated_at": datetime.utcnow().isoformat()
+        }
+
+
+def _fallback_summary(content: str) -> str:
+    """Extract first 3 sentences as a simple summary."""
+    sentences = [s.strip() for s in content.split('.') if s.strip()]
+    if not sentences:
+        return "Summary is being generated. Please try again shortly."
+    text = ". ".join(sentences[:3]) + "."
+    return text[:500] if len(text) <= 500 else text[:497] + "..."
 
 
 @router.post("/{article_id}/chat")
