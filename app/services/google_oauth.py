@@ -3,6 +3,7 @@ import httpx
 from typing import Optional, Dict, Any
 from dataclasses import dataclass
 import logging
+import urllib.parse
 
 from app.core.config import get_settings
 
@@ -58,7 +59,7 @@ class GoogleOAuthService:
             logger.error("Google Client ID is missing.")
             return None
 
-        query_string = "&".join(f"{k}={v}" for k, v in params.items())
+        query_string = "&".join(f"{k}={urllib.parse.quote(str(v), safe='')}" for k, v in params.items())
         return f"{GOOGLE_AUTH_URL}?{query_string}"
     
     async def exchange_code_for_tokens(self, code: str) -> Dict[str, Any]:

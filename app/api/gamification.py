@@ -39,39 +39,10 @@ async def get_points_history(
     return PointsHistoryResponse(items=points, total_points=total)
 
 
-@router.post("/user/points/award")
-async def award_points(
-    action_type: str,
-    points: int,
-    reference_id: Optional[UUID] = None,
-    user_id: str = Depends(get_current_user_id),
-    db: Session = Depends(get_db)
-):
-    """Award points for an action."""
-    # Point values by action type
-    point_values = {
-        "read_article": 10,
-        "quiz_complete": 50,
-        "quiz_correct": 20,
-        "daily_streak": 15,
-        "weekly_streak": 100,
-        "learn_jargon": 5,
-        "share_article": 10
-    }
-    
-    # Use predefined points or custom value
-    actual_points = point_values.get(action_type, points)
-    
-    ledger_entry = PointsLedger(
-        user_id=user_id,
-        points=actual_points,
-        action_type=action_type,
-        reference_id=reference_id
-    )
-    db.add(ledger_entry)
-    db.commit()
-    
-    return {"points_awarded": actual_points, "action_type": action_type}
+# REMOVED: Public POST /user/points/award endpoint (security fix W5)
+# Points should only be awarded internally by server logic, not by client request.
+# The endpoint allowed any authenticated user to award themselves arbitrary points.
+
 
 
 class ReadingTimeRequest(BaseModel):
@@ -90,19 +61,29 @@ async def record_reading_time(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     
+    # Deduplication: check if points were already awarded for this article
+    already_awarded = db.query(PointsLedger).filter(
+        PointsLedger.user_id == user_id,
+        PointsLedger.action_type == "read_article",
+        PointsLedger.reference_id == str(body.article_id)
+    ).first()
+    
     # Update cumulative reading time
     user.total_reading_time_seconds = (user.total_reading_time_seconds or 0) + body.seconds
-    user.articles_read_count = (user.articles_read_count or 0) + 1
     
-    # Award points for completing an article (if reading time > 30 seconds)
-    if body.seconds >= 30:
-        ledger_entry = PointsLedger(
-            user_id=user_id,
-            points=10,
-            action_type="read_article",
-            reference_id=body.article_id
-        )
-        db.add(ledger_entry)
+    # Only increment articles_read_count and award points if first time reading
+    if not already_awarded:
+        user.articles_read_count = (user.articles_read_count or 0) + 1
+        
+        # Award points for completing an article (if reading time > 30 seconds)
+        if body.seconds >= 30:
+            ledger_entry = PointsLedger(
+                user_id=user_id,
+                points=10,
+                action_type="read_article",
+                reference_id=body.article_id
+            )
+            db.add(ledger_entry)
     
     db.commit()
     
@@ -229,7 +210,7 @@ async def get_weekly_quiz(
         for article in recent_articles:
             try:
                 questions = await gemini_service.generate_quiz_questions(
-                    article.content, 
+                    article_content=article.content, 
                     num_questions=2
                 )
                 for q in questions:
@@ -239,6 +220,7 @@ async def get_weekly_quiz(
                         question=q.get("question", ""),
                         options=q.get("options", []),
                         correct_answer=q.get("correct_answer", ""),
+                        hint=q.get("hint"),
                         points_value=20
                     )
                     db.add(question)
@@ -310,21 +292,12 @@ async def generate_quiz_from_verified_news(
     week_start = today - timedelta(days=today.weekday())
     week_start_dt = datetime.combine(week_start, datetime.min.time())
     
-    # Get highest-scored verified articles from this week
+    # Get most recent articles this week
     verified_articles = db.query(Article).filter(
-        Article.ingested_at >= week_start_dt,
-        Article.veracity_score >= 70  # Only verified news
+        Article.ingested_at >= week_start_dt
     ).order_by(
-        Article.veracity_score.desc()
+        Article.ingested_at.desc()
     ).limit(3).all()
-    
-    if not verified_articles:
-        # Fallback to any recent articles if no verified ones
-        verified_articles = db.query(Article).filter(
-            Article.ingested_at >= week_start_dt
-        ).order_by(
-            Article.ingested_at.desc()
-        ).limit(3).all()
     
     if not verified_articles:
         raise HTTPException(
@@ -337,13 +310,12 @@ async def generate_quiz_from_verified_news(
     for article in verified_articles:
         try:
             questions = await gemini_service.generate_quiz_questions(
-                article.content,
+                article_content=article.content,
                 num_questions=num_questions // len(verified_articles) or 1
             )
             for q in questions:
                 q["article_id"] = str(article.id)
                 q["article_title"] = article.title
-                q["veracity_score"] = article.veracity_score
             all_questions.extend(questions)
         except Exception as e:
             continue
@@ -353,8 +325,7 @@ async def generate_quiz_from_verified_news(
         "source_articles": [
             {
                 "id": str(a.id),
-                "title": a.title,
-                "veracity_score": a.veracity_score
+                "title": a.title
             }
             for a in verified_articles
         ]
@@ -383,6 +354,20 @@ async def submit_quiz(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Question not found"
+        )
+    
+    # Prevent quiz re-submission (W7 fix)
+    existing_attempt = db.query(QuizAttempt).filter(
+        QuizAttempt.user_id == user_id,
+        QuizAttempt.quiz_id == first_question.quiz_id
+    ).first()
+    if existing_attempt:
+        return QuizResultResponse(
+            score=existing_attempt.score,
+            max_score=existing_attempt.max_score,
+            points_earned=0,
+            correct_answers=0,
+            total_questions=len(submission.answers)
         )
     
     # Create attempt

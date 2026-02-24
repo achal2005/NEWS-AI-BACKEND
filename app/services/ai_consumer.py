@@ -15,12 +15,11 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
+from app.services.gemini import gemini_service
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.db import SessionLocal, Article, ArticleSummary, ArticleJargon
-from app.services.gemini import gemini_service
-from app.services.factcheck import factcheck_service
 from app.services.kafka_service import KafkaConsumerService
 
 settings = get_settings()
@@ -96,14 +95,12 @@ class AINewsConsumer:
         kid_summary_task = self._generate_summary(content, "kid")
         pro_summary_task = self._generate_summary(content, "pro")
         jargon_task = self._extract_jargon(content)
-        factcheck_task = self._check_veracity(title, content)
         
         # Wait for all tasks
-        kid_summary, pro_summary, jargon_list, veracity_data = await asyncio.gather(
+        kid_summary, pro_summary, jargon_list = await asyncio.gather(
             kid_summary_task,
             pro_summary_task,
             jargon_task,
-            factcheck_task,
             return_exceptions=True
         )
         
@@ -117,15 +114,11 @@ class AINewsConsumer:
         if isinstance(jargon_list, Exception):
             logger.error(f"Jargon extraction failed: {jargon_list}")
             jargon_list = []
-        if isinstance(veracity_data, Exception):
-            logger.error(f"Veracity check failed: {veracity_data}")
-            veracity_data = {"veracity_score": None, "claims": []}
         
         # Ensure proper types for save
         safe_kid_summary: Optional[str] = kid_summary if isinstance(kid_summary, str) else None
         safe_pro_summary: Optional[str] = pro_summary if isinstance(pro_summary, str) else None
         safe_jargon_list: list = jargon_list if isinstance(jargon_list, list) else []
-        safe_veracity_data: dict = veracity_data if isinstance(veracity_data, dict) else {"veracity_score": None, "claims": []}
         safe_article_id: str = str(article_id) if article_id else ""
         
         # Save to database
@@ -133,8 +126,7 @@ class AINewsConsumer:
             article_id=safe_article_id,
             kid_summary=safe_kid_summary,
             pro_summary=safe_pro_summary,
-            jargon_list=safe_jargon_list,
-            veracity_data=safe_veracity_data
+            jargon_list=safe_jargon_list
         )
         
         logger.info(f"Completed processing article: {article_id}")
@@ -157,30 +149,14 @@ class AINewsConsumer:
             logger.error(f"Jargon extraction error: {e}")
             return []
     
-    async def _check_veracity(self, title: str, content: str) -> dict:
-        """Check article veracity using FactCheck API."""
-        try:
-            # Use title for primary claim check
-            result = await factcheck_service.check_claim(title)
-            
-            # If no results from title, try first sentence of content
-            if result.get("status") == "no_matching_claims" and content:
-                sentences = content.split('.')
-                first_sentence = sentences[0][:200] if sentences else ""
-                result = await factcheck_service.check_claim(first_sentence)
-            
-            return result
-        except Exception as e:
-            logger.error(f"Veracity check error: {e}")
-            return {"veracity_score": None, "claims": [], "status": "error"}
+
     
     async def _save_to_database(
         self,
         article_id: str,
         kid_summary: Optional[str],
         pro_summary: Optional[str],
-        jargon_list: list,
-        veracity_data: dict
+        jargon_list: list
     ):
         """Save processed article data to PostgreSQL."""
         db: Session = SessionLocal()
@@ -192,13 +168,6 @@ class AINewsConsumer:
             if not article:
                 logger.warning(f"Article {article_id} not found in database")
                 return
-            
-            # Update article with veracity score
-            if veracity_data.get("veracity_score") is not None or veracity_data.get("claims"):
-                article.veracity_score = veracity_data.get("veracity_score")
-                article.veracity_claims = veracity_data.get("claims", [])
-                article.veracity_checked_at = datetime.utcnow()
-                logger.info(f"Veracity score for {article_id}: {veracity_data.get('veracity_score')}")
             
             # Save Kid summary
             if kid_summary:

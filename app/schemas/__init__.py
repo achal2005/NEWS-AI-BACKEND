@@ -172,6 +172,7 @@ class QuizQuestionResponse(BaseModel):
     question: str
     options: List[str]
     points_value: int
+    hint: Optional[str] = None
     
     class Config:
         from_attributes = True

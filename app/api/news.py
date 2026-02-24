@@ -1,5 +1,8 @@
 from typing import Optional, List
 from uuid import UUID
+import asyncio
+import hashlib
+import logging
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from datetime import datetime
@@ -11,8 +14,12 @@ from app.schemas import (
     ArticleSummaryResponse,
     ChatRequest
 )
-from app.services import gemini_service, news_api_service
+from app.services import gemini_service, news_api_service, kafka_producer
 from app.services.rss_aggregator import rss_aggregator_service
+
+logger = logging.getLogger(__name__)
+from app.services.gemini import GeminiQuotaError, GeminiServiceError
+from app.services.article_scraper import scrape_article_content
 
 router = APIRouter(prefix="/api/news", tags=["News"])
 
@@ -120,6 +127,11 @@ async def refresh_news_from_api(categories: List[str], db: Session) -> int:
     return articles_fetched
 
 
+def _compute_url_hash(url: str) -> str:
+    """Compute SHA-256 hash of a URL for fast deduplication."""
+    return hashlib.sha256(url.encode("utf-8")).hexdigest()
+
+
 def _store_article(item: dict, fallback_category: str, db: Session) -> int:
     """Store a single article dict. Returns 1 if stored, 0 if skipped."""
     source_url = item.get("source_url", "")
@@ -129,10 +141,11 @@ def _store_article(item: dict, fallback_category: str, db: Session) -> int:
     if not content or not title:
         return 0
 
-    # Deduplicate by source_url OR title
-    if source_url:
+    # SHA-256 deduplication on source_url
+    url_hash = _compute_url_hash(source_url) if source_url else None
+    if url_hash:
         existing = db.query(Article).filter(
-            Article.source_url == source_url
+            Article.url_hash == url_hash
         ).first()
         if existing:
             return 0
@@ -165,10 +178,25 @@ def _store_article(item: dict, fallback_category: str, db: Session) -> int:
         source_name=item.get("source_name"),
         author=item.get("author"),
         image_url=item.get("image_url"),
+        url_hash=url_hash,
         category=item.get("category") or fallback_category.capitalize(),
         published_at=pub_at,
     )
     db.add(article)
+
+    # Emit to Kafka for brand-new articles only
+    try:
+        import asyncio
+        asyncio.get_event_loop().create_task(
+            kafka_producer.publish_raw_article({
+                "title": title,
+                "source_url": source_url,
+                "category": article.category,
+            })
+        )
+    except Exception:
+        pass  # Don't fail ingestion if Kafka is down
+
     return 1
 
 
@@ -262,7 +290,26 @@ async def get_article_summary(
     
     # Generate new summary
     try:
-        summary_text = await gemini_service.generate_summary(article.content, mode)
+        # NewsAPI free tier truncates content (~200 chars + "[+XXX chars]").
+        # If content looks truncated, scrape the full article from source URL.
+        content_for_summary = article.content or ""
+        is_truncated = (
+            "[+" in content_for_summary and "chars]" in content_for_summary
+        ) or len(content_for_summary) < 500
+
+        if is_truncated and hasattr(article, 'source_url') and article.source_url:
+            content_for_summary = await scrape_article_content(
+                article.source_url, fallback_content=content_for_summary
+            )
+        elif is_truncated and hasattr(article, 'url') and article.url:
+            content_for_summary = await scrape_article_content(
+                article.url, fallback_content=content_for_summary
+            )
+
+        summary_text = await asyncio.wait_for(
+            gemini_service.generate_summary(content_for_summary, mode),
+            timeout=30.0
+        )
         
         # Cache the summary
         new_summary = ArticleSummary(
@@ -275,13 +322,25 @@ async def get_article_summary(
         db.refresh(new_summary)
         
         return new_summary
+    except GeminiQuotaError as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=429,
+            detail=str(e)
+        )
+    except GeminiServiceError as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(e)
+        )
     except Exception as e:
         db.rollback()
         # Return un-cached fallback so the user still sees something
         return {
             "mode": mode,
             "summary": _fallback_summary(article.content),
-            "generated_at": datetime.utcnow().isoformat()
+            "generated_at": datetime.utcnow()
         }
 
 

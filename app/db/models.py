@@ -25,6 +25,7 @@ class User(Base):
     profile_complete = Column(Boolean, default=False)  # True after user completes registration
     
     created_at = Column(DateTime, default=datetime.utcnow)
+    user_role = Column(String(10), default="pro")  # "kid" or "pro" top-level role
     last_login = Column(DateTime, nullable=True)
     total_reading_time_seconds = Column(Integer, default=0)  # Cumulative reading time
     articles_read_count = Column(Integer, default=0)  # Total articles read
@@ -62,12 +63,9 @@ class Article(Base):
     author = Column(String(255), nullable=True)
     category = Column(String(100), nullable=True, index=True)
     image_url = Column(String(1000), nullable=True)
+    url_hash = Column(String(64), unique=True, nullable=True, index=True)  # SHA-256 of source_url
     published_at = Column(DateTime, nullable=True)
     ingested_at = Column(DateTime, default=datetime.utcnow)
-    
-    # Fact checking
-    veracity_score = Column(Float, nullable=True)  # 0-100 score
-    fact_check_claims = Column(JSON, default=list)  # List of claim reviews
     
     # Relationships
     summaries = relationship("ArticleSummary", back_populates="article")
@@ -143,6 +141,7 @@ class QuizQuestion(Base):
     question = Column(Text, nullable=False)
     options = Column(JSON, nullable=False)  # ["option1", "option2", "option3", "option4"]
     correct_answer = Column(String(500), nullable=False)
+    hint = Column(Text, nullable=True)  # Hint for the question
     points_value = Column(Integer, default=20)
     
     # Relationships

@@ -1,5 +1,4 @@
 from contextlib import asynccontextmanager
-import asyncio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import logging
@@ -7,7 +6,7 @@ import logging
 from app.core.config import get_settings
 from app.db import Base, engine
 from app.api import auth_router, news_router, user_router, gamification_router
-from app.services import kafka_producer, ai_news_consumer
+from app.services import kafka_producer
 from app.core.scheduler import start_scheduler
 
 settings = get_settings()
@@ -16,15 +15,10 @@ settings = get_settings()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Background task reference
-consumer_task = None
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager."""
-    global consumer_task
-    
     # Startup
     logger.info("Starting up AI News Ecosystem...")
     
@@ -32,19 +26,12 @@ async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
     logger.info("Database tables created")
     
-    # Start Kafka producer
+    # Start Kafka producer (optional — app works without it)
     try:
         await kafka_producer.start()
         logger.info("Kafka producer started")
     except Exception as e:
         logger.warning(f"Kafka producer failed to start: {e}")
-    
-    # Start AI consumer as background task
-    # try:
-    #     consumer_task = asyncio.create_task(ai_news_consumer.start())
-    #     logger.info("AI News Consumer started as background task")
-    # except Exception as e:
-    #     logger.warning(f"AI News Consumer failed to start: {e}")
 
     # Start Background Scheduler (Daily News Refresh)
     try:
@@ -56,16 +43,6 @@ async def lifespan(app: FastAPI):
     
     # Shutdown
     logger.info("Shutting down...")
-    
-    # Stop AI consumer
-    if consumer_task:
-        try:
-            await ai_news_consumer.stop()
-            consumer_task.cancel()
-        except Exception:
-            pass
-    
-    # Stop Kafka producer
     try:
         await kafka_producer.stop()
     except Exception:
@@ -111,11 +88,3 @@ async def health_check():
     """Health check endpoint."""
     return {"status": "healthy"}
 
-
-@app.get("/consumer/status")
-async def consumer_status():
-    """Check AI Consumer status."""
-    return {
-        "consumer_running": ai_news_consumer.running,
-        "kafka_topic": "news-raw"
-    }
