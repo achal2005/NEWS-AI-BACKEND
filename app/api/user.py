@@ -49,6 +49,12 @@ async def update_profile(
         profile.reading_level = profile_data.reading_level
     if profile_data.topic_weights is not None:
         profile.topic_weights = profile_data.topic_weights
+        
+    # Also update the user model if depth_preference is provided
+    if profile_data.depth_preference is not None:
+        user = db.query(User).filter(User.id == user_id).first()
+        if user:
+            user.depth_preference = profile_data.depth_preference
     
     db.commit()
     db.refresh(profile)

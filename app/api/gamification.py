@@ -191,6 +191,8 @@ async def get_weekly_quiz(
         WeeklyQuiz.is_active == True
     ).first()
     
+    needs_questions = False
+    
     if not quiz:
         # Create new quiz if none exists
         quiz = WeeklyQuiz(
@@ -201,7 +203,12 @@ async def get_weekly_quiz(
         db.add(quiz)
         db.commit()
         db.refresh(quiz)
-        
+        needs_questions = True
+    elif len(quiz.questions) == 0:
+        # Quiz exists but has no questions — regenerate
+        needs_questions = True
+    
+    if needs_questions:
         # Generate questions from recent articles
         recent_articles = db.query(Article).order_by(
             Article.ingested_at.desc()
@@ -249,6 +256,7 @@ async def list_available_quizzes(
                 "week_start": q.week_start.isoformat(),
                 "week_end": q.week_end.isoformat(),
                 "question_count": len(q.questions),
+                "is_active": q.is_active,
             }
             for q in quizzes
         ]

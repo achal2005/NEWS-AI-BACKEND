@@ -33,6 +33,7 @@ class UserResponse(BaseModel):
     total_reading_time_seconds: int = 0
     articles_read_count: int = 0
     created_at: datetime
+    depth_preference: int = 5
     taste_profile: Optional["TasteProfileResponse"] = None
     
     class Config:
@@ -86,7 +87,6 @@ class ArticleResponse(BaseModel):
     category: Optional[str]
     published_at: Optional[datetime]
     ingested_at: datetime
-    veracity_score: Optional[float] = None
     summaries: List[ArticleSummaryResponse] = []
     jargon: List[ArticleJargonResponse] = []
     
@@ -115,6 +115,7 @@ class TasteProfileUpdate(BaseModel):
     summary_mode: Optional[str] = Field(None, pattern="^(kid|pro)$")
     reading_level: Optional[int] = Field(None, ge=1, le=10)
     topic_weights: Optional[dict] = None
+    depth_preference: Optional[int] = Field(None, ge=1, le=10)
 
 
 class TasteProfileResponse(BaseModel):

@@ -100,28 +100,29 @@ async def refresh_news_from_api(categories: List[str], db: Session) -> int:
 
     # ── 1. NewsAPI (if key is configured) ─────────────────────────
     for category in categories:
-        news_items = await news_api_service.fetch_top_headlines(
-            category=category,
-            page_size=20
+        try:
+            news_items = await news_api_service.fetch_top_headlines(
+                category=category,
+                page_size=20
+            )
+
+            for item in news_items:
+                articles_fetched += _store_article(item, category, db)
+        except Exception as e:
+            logger.warning(f"NewsAPI fetch failed for {category}: {e}")
+
+    # ── 2. RSS Feeds ──────────────────────────────────────────────
+    try:
+        rss_items = await rss_aggregator_service.fetch_all(
+            categories=categories,
+            max_per_feed=15,
         )
-
-        for item in news_items:
-            articles_fetched += _store_article(item, category, db)
-
-    # ── 2. RSS Feeds (DISABLED as per user request) ────────────────
-    # try:
-    #     rss_items = await rss_aggregator_service.fetch_all(
-    #         categories=categories,
-    #         max_per_feed=15,
-    #     )
-    #     for item in rss_items:
-    #         articles_fetched += _store_article(
-    #             item, item.get("category", "General"), db
-    #         )
-    # except Exception as e:
-    #     # Don't fail the whole refresh if RSS has issues
-    #     print(f"Global RSS refresh error: {e}") 
-    #     pass
+        for item in rss_items:
+            articles_fetched += _store_article(
+                item, item.get("category", "General"), db
+            )
+    except Exception as e:
+        logger.warning(f"RSS refresh error: {e}")
 
     db.commit()
     return articles_fetched
@@ -267,10 +268,11 @@ async def get_article(
 @router.get("/{article_id}/summary", response_model=ArticleSummaryResponse)
 async def get_article_summary(
     article_id: UUID,
-    mode: str = Query("pro", pattern="^(kid|pro)$"),
+    mode: str = Query("pro", pattern="^(kid|pro|skim|deep)$"),
+    user_id: Optional[str] = Depends(get_optional_user_id),
     db: Session = Depends(get_db)
 ):
-    """Get or generate article summary."""
+    """Get or generate article summary (cached per article+mode)."""
     article = db.query(Article).filter(Article.id == str(article_id)).first()
     
     if not article:
@@ -279,16 +281,27 @@ async def get_article_summary(
             detail="Article not found"
         )
     
-    # Check for cached summary
-    existing_summary = db.query(ArticleSummary).filter(
+    # ── 1. Check cache first — saves a Gemini API call ─────────────
+    cached = db.query(ArticleSummary).filter(
         ArticleSummary.article_id == str(article_id),
         ArticleSummary.mode == mode
     ).first()
     
-    if existing_summary:
-        return existing_summary
+    if cached:
+        return {
+            "mode": cached.mode,
+            "summary": cached.summary,
+            "generated_at": cached.generated_at
+        }
     
-    # Generate new summary
+    # ── 2. No cache hit — generate via Gemini ─────────────────────
+    depth_level = 5  # Default
+    if user_id:
+        from app.db import User
+        user = db.query(User).filter(User.id == user_id).first()
+        if user and hasattr(user, 'depth_preference') and user.depth_preference is not None:
+            depth_level = user.depth_preference
+
     try:
         # NewsAPI free tier truncates content (~200 chars + "[+XXX chars]").
         # If content looks truncated, scrape the full article from source URL.
@@ -306,22 +319,36 @@ async def get_article_summary(
                 article.url, fallback_content=content_for_summary
             )
 
+        category = article.category or "General News"
         summary_text = await asyncio.wait_for(
-            gemini_service.generate_summary(content_for_summary, mode),
+            gemini_service.generate_depth_calibrated_summary(
+                content=content_for_summary, 
+                depth_level=depth_level,
+                category=category,
+                mode=mode
+            ),
             timeout=30.0
         )
         
-        # Cache the summary
+        # ── 3. Cache the generated summary in the database ─────────
+        now = datetime.utcnow()
         new_summary = ArticleSummary(
             article_id=str(article_id),
             mode=mode,
-            summary=summary_text
+            summary=summary_text,
+            generated_at=now
         )
         db.add(new_summary)
-        db.commit()
-        db.refresh(new_summary)
-        
-        return new_summary
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()  # If duplicate, that's fine — another request got there first
+
+        return {
+            "mode": mode,
+            "summary": summary_text,
+            "generated_at": now
+        }
     except GeminiQuotaError as e:
         db.rollback()
         raise HTTPException(

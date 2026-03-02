@@ -23,6 +23,7 @@ class User(Base):
     google_id = Column(String(255), unique=True, nullable=True, index=True)
     avatar_url = Column(String(1000), nullable=True)
     profile_complete = Column(Boolean, default=False)  # True after user completes registration
+    depth_preference = Column(Integer, default=5)  # 1-10 scale for complex AI generation
     
     created_at = Column(DateTime, default=datetime.utcnow)
     user_role = Column(String(10), default="pro")  # "kid" or "pro" top-level role

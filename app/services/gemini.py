@@ -170,6 +170,33 @@ class GeminiService:
         ) from last_error
 
     # ── Public Methods ────────────────────────────────────────────────
+    async def generate_depth_calibrated_summary(self, content: str, depth_level: int, category: str, mode: str) -> str:
+        """
+        Generate a highly calibrated summary using the configured Gemini model.
+        Supports modes: kid, skim, pro, deep.
+        """
+        # Map kid/pro to skim/deep for internal use
+        internal_mode = mode.lower()
+        if internal_mode == 'kid':
+            internal_mode = 'skim'
+        elif internal_mode == 'pro':
+            internal_mode = 'deep'
+        
+        system_instruction = f"""You are an expert news summarizer. The user has selected a complexity level of {depth_level} on a strict 1 to 10 scale for an article about {category}. Treat this scale as a continuous, mathematical, linear gradient:
+
+Level 1: Elementary school reading level. Use extreme simplicity, short sentences, and highly relatable analogies. Zero jargon.
+Level 10: Post-graduate/PhD domain expert level. Use highly advanced, domain-specific terminology, complex sentence structures, and maximum conceptual density.
+
+Calculate the exact linguistic midpoint for a level {depth_level}. A level 3 must be noticeably more advanced than a level 2. Adjust your vocabulary, sentence length, and analytical depth to perfectly match this exact integer. Do not round to anchor points."""
+        
+        if internal_mode == 'skim':
+            prompt = f"{system_instruction}\n\nMODE INSTRUCTION: Mandate exactly 3 snappy bullet points. Keep it brief and scannable.\n\nARTICLE:\n{content}\n\nSUMMARY:"
+        else:
+            prompt = f"{system_instruction}\n\nMODE INSTRUCTION: Mandate a comprehensive, multi-paragraph analysis.\n\nARTICLE:\n{content}\n\nSUMMARY:"
+
+        # Use the shared _call_gemini method which includes rate limiting, circuit breaker, and retry
+        return await self._call_gemini(prompt)
+
     async def generate_summary(self, content: str, mode: str = "pro") -> str:
         """
         Generate article summary based on mode.

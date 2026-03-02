@@ -192,3 +192,32 @@ async def logout():
     For server-side session invalidation, implement token blacklist.
     """
     return {"message": "Logged out successfully"}
+
+
+@router.get("/dev-login")
+async def dev_login(db: Session = Depends(get_db)):
+    """Mock login for testing."""
+    user = db.query(User).first()
+    if not user:
+        user = User(
+            email="test@example.com",
+            display_name="Dev User",
+            profile_complete=True,
+            age=25
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+        
+        taste = TasteProfile(
+            user_id=user.id,
+            preferred_categories=["Technology"],
+            summary_mode="pro",
+            reading_level=5,
+            topic_weights={}
+        )
+        db.add(taste)
+        db.commit()
+
+    token = create_access_token(data={"sub": str(user.id)})
+    return {"access_token": token, "profile_complete": True}

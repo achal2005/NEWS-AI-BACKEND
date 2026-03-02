@@ -195,7 +195,7 @@ class NewsAPIService:
             async with httpx.AsyncClient(headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36'}, timeout=10.0) as client:
                 response = await client.get(url, follow_redirects=True)
                 if response.status_code == 200:
-                    soup = BeautifulSoup(response.text, 'lxml')
+                    soup = BeautifulSoup(response.text, 'html.parser')
                     
                     # Remove unwanted elements like scripts, styles, forms, and nav
                     for element in soup(["script", "style", "nav", "header", "footer", "form", "aside", "iframe", "noscript"]):
