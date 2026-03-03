@@ -1,108 +1,88 @@
-# The AI News Ecosystem: Beginner's Guide
+# The Daily Brief (AI News Ecosystem)
 
-Welcome to the **AI News Ecosystem**! This project is designed to make reading the news fun, engaging, and easy to understand for everyone. 
+A full-stack, AI-powered personalized news aggregation platform. "The Daily Brief" automatically ingests live RSS feeds, processes the articles using Google's Gemini AI to generate customized summaries, and presents them in a beautiful, newspaper-style UI with gamified engagement features.
 
-Whether you are a professional wanting a quick executive brief, or a kid wanting to learn about the world with fun emojis, this platform has you covered.
+## ✨ Features
 
----
+*   **Automated News Ingestion:** A python job scheduler fetches, parses, and deduplicates news from various RSS sources.
+*   **AI-Powered Summaries:** Integrates with Google Gemini API to dynamically generate "Pro Analyst" (deep dives) or "Student" (simplified) summaries based on the user's reading preference.
+*   **Secure Authentication:** Passwordless Google OAuth 2.0 implementation with JWT session management.
+*   **Gamification:** Interactive daily quizzes generated from the day's news, global leaderboards, and user leveling systems.
+*   **Modern Newspaper UI:** Highly responsive CSS masonry/grid design built with Next.js and Tailwind CSS, featuring smooth Framer Motion animations.
+*   **Fully Deployed:** Frontend hosted on Vercel, Backend hosted on Render with a PostgreSQL database.
 
-## 🌟 What is this project?
+## 🛠️ Tech Stack
 
-Imagine a newspaper that writes itself every day, customized exactly how you like to read. That's what this project is! 
+**Frontend:**
+*   Next.js 14 (App Router)
+*   React 18
+*   Tailwind CSS
+*   Zustand (State Management)
+*   Tanstack React Query
+*   Framer Motion
+*   Lucide React (Icons)
 
-It automatically finds the top news stories from around the world, uses Artificial Intelligence (AI) to read them, and then rewrites them in two distinct styles:
-1. **Kid Mode 🎈**: Fun, simple language, heavily using emojis, perfect for a 5th grader. It even includes fun "Did you know?" facts!
-2. **Pro Mode 🎯**: Serious, bullet-point executive summaries focusing on market impact and key takeaways for busy professionals.
+**Backend:**
+*   FastAPI (Python)
+*   PostgreSQL & SQLAlchemy (ORM)
+*   Alembic (Migrations)
+*   Google Generative API (Gemini Pro)
+*   APScheduler (Automated Jobs)
+*   BeautifulSoup4 & Feedparser
+*   Uvicorn
 
-But it doesn't stop there! As you read, you earn points. At the end of the week, the AI automatically generates a **Quiz** based on the news you just read, and you can compete on a **Global Leaderboard**!
-
----
-
-## 🛠️ How Does It Work Under the Hood?
-
-For beginners curious about the technology, here is exactly what happens when you use the app:
-
-### 1. Finding the News (The Scraper)
-Every few hours, our backend server talks to **NewsAPI** (a service that lists global news articles) and asks, *"What are the top stories right now?"* 
-It downloads the titles, images, and links. If the article text is too short, we have a custom "Web Scraper" (`BeautifulSoup`) that visits the actual news website and copies the full text so our AI can read the whole story.
-
-### 2. The AI Brain (Google Gemini)
-When you click on an article and ask for a summary, our server sends the full article text to **Google Gemini 2.5 Flash** (a powerful, super-fast AI model). 
-We give the AI a strict set of instructions depending on your choice:
-- *"Act like a fun teacher explaining this to a 10-year-old."* (Kid Mode)
-- *"Act like a Wall Street analyst summarizing this for a CEO."* (Pro Mode)
-
-The AI thinks for a second, generates the perfect summary, and sends it back to your screen. We then save this summary in our database so the next person who wants to read it gets it instantly!
-
-### 3. Gamification (Making it a Game)
-- **Reading Points**: When you open an article, a hidden timer starts counting. If you read for more than 30 seconds, the frontend sends a secret message to the backend saying *"Give this user 10 points!"*
-- **Quizzes**: When you visit the Quiz page, the backend looks at the most recent news articles in the database. It sends them all to the AI and says, *"Generate a 10-question multiple-choice quiz based on these facts."* You play the quiz, and your score gets added to the **Leaderboard**.
-
----
-
-## 🧱 The Technology Stack
-
-This project is built using modern, industry-standard tools:
-
-- **Frontend (The User Interface)**: 
-  - **Next.js & React**: The building blocks of our website.
-  - **Tailwind CSS**: Used to style the website (colors, spacing, layout) quickly and beautifully.
-  - **Framer Motion**: Adds the smooth scroll animations and fading effects you see on the landing page.
-- **Backend (The Server & Logic)**:
-  - **FastAPI (Python)**: The engine that handles requests from the frontend, talks to the AI, and manages the database. It is incredibly fast and incredibly easy to use.
-  - **SQLAlchemy & SQLite**: Our database system. It stores user profiles, articles, and points securely.
-- **External AI Services**:
-  - **Google Gemini API**: Generates the summaries and quizzes.
-  - **Google OAuth**: Allows you to click "Sign in with Google" securely.
-
----
-
-## 🚀 How to Run This Project on Your Computer
-
-Running this project is easy. You need to start two things: the **Backend** (which processes data) and the **Frontend** (which displays the website).
+## 🚀 Getting Started
 
 ### Prerequisites
-1. **Python** installed on your computer (Version 3.11 or higher).
-2. **Node.js** installed on your computer (Version 18 or higher).
-3. API Keys (You need free accounts for Google Gemini AI and NewsAPI).
+*   Node.js (v18+)
+*   Python (3.10+)
+*   PostgreSQL database
+*   Google Cloud Console Account (for OAuth Client ID/Secret)
+*   Google Gemini API Key
 
-### Step 1: Add Your API Keys
-In the `backend` folder, find the `.env` file (or rename `.env.example` to `.env`). Add your API keys inside:
-```text
-GEMINI_API_KEY=your-gemini-api-key
-NEWS_API_KEY=your-newsapi-key
-GOOGLE_CLIENT_ID=your-google-oauth-client-id
-GOOGLE_CLIENT_SECRET=your-google-oauth-client-secret
-```
+### Installation
 
-### Step 2: The Easiest Way to Start (Windows)
-If you are on Windows, simply double-click or run the `start_project.ps1` file.
-```powershell
-.\start_project.ps1
-```
-This script will automatically open two terminals, start the backend, start the frontend, and open your web browser to `http://localhost:3000`!
+1.  **Clone the repository:**
+    ```bash
+    git clone https://github.com/achal2005/NEWS-AI.git
+    cd NEWS-AI
+    ```
 
-### Step 3: The Manual Way to Start
+2.  **Backend Setup:**
+    ```bash
+    cd backend
+    python -m venv venv
+    source venv/bin/activate  # On Windows: .\venv\Scripts\activate
+    pip install -r requirements.txt
+    ```
+    Create a `.env` file in the `backend` directory based on `.env.example` and fill in your database, JWT, Gemini, and Google OAuth credentials.
 
-If you prefer to start them manually (or are on Mac/Linux):
+    Run database migrations and start the server:
+    ```bash
+    alembic upgrade head
+    uvicorn app.main:app --reload --port 8000
+    ```
 
-**Terminal 1 — Start the Backend:**
-```bash
-cd backend
-python -m venv venv             # Create a virtual environment
-.\venv\Scripts\activate         # Turn it on (Windows) / source venv/bin/activate (Mac)
-pip install -r requirements.txt # Install required Python packages
-uvicorn app.main:app --reload   # Start the server!
-```
-*The backend is now running at `http://localhost:8000`.*
+3.  **Frontend Setup:**
+    Open a new terminal window.
+    ```bash
+    cd frontend
+    npm install
+    ```
+    Create a `.env.local` file in the `frontend` directory with:
+    ```env
+    NEXT_PUBLIC_API_URL=http://localhost:8000
+    ```
+    Start the development server:
+    ```bash
+    npm run dev
+    ```
 
-**Terminal 2 — Start the Frontend:**
-```bash
-cd frontend
-npm install                     # Install required Node packages
-npm run dev                     # Start the website!
-```
-*The frontend is now running at `http://localhost:3000`.*
+4.  **Open the application:**
+    Navigate to `http://localhost:3000` in your browser.
 
-### You're Done! 🎉
-Open your browser, go to `http://localhost:3000`, click "Go to Dashboard", and enjoy your personalized news!
+## 🤝 Contributing
+Contributions, issues, and feature requests are welcome! Feel free to check the issues page.
+
+## 📝 License
+This project is open source and available under the [MIT License](LICENSE).
