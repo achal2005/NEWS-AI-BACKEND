@@ -26,6 +26,20 @@ async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
     logger.info("Database tables created")
     
+    # Auto-migrate: add depth_level column to article_summaries if missing
+    try:
+        from sqlalchemy import text, inspect
+        inspector = inspect(engine)
+        columns = [c['name'] for c in inspector.get_columns('article_summaries')]
+        if 'depth_level' not in columns:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE article_summaries ADD COLUMN depth_level INTEGER DEFAULT 5"))
+            logger.info("Migration: added depth_level column to article_summaries")
+        else:
+            logger.info("Migration: depth_level column already exists")
+    except Exception as e:
+        logger.warning(f"Migration check skipped: {e}")
+    
     # Start Kafka producer (optional — app works without it)
     try:
         await kafka_producer.start()
