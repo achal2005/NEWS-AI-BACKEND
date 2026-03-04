@@ -126,6 +126,7 @@ class TasteProfileResponse(BaseModel):
     summary_mode: str
     reading_level: int
     topic_weights: dict
+    depth_preference: int = 5
     
     class Config:
         from_attributes = True

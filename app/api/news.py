@@ -6,6 +6,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy import func
 from datetime import datetime
 
 from app.db import get_db, Article, ArticleSummary, ArticleJargon, TasteProfile
@@ -52,10 +53,11 @@ async def list_articles(
     
     # Filter by specific category if provided
     if category:
-        query = query.filter(Article.category == category)
+        query = query.filter(func.lower(Article.category) == category.lower())
     elif preferred_categories and not category:
-        # Filter by user's preferred categories
-        query = query.filter(Article.category.in_(preferred_categories))
+        # Filter by user's preferred categories (case-insensitive)
+        lower_prefs = [c.lower() for c in preferred_categories]
+        query = query.filter(func.lower(Article.category).in_(lower_prefs))
     
     total = query.count()
     
@@ -288,9 +290,18 @@ async def get_article_summary(
         )
     
     # ── 1. Check cache first — saves a Gemini API call ─────────────
+    # Determine depth_level for cache lookup
+    depth_level = 5  # Default
+    if user_id:
+        from app.db import User
+        user = db.query(User).filter(User.id == user_id).first()
+        if user and hasattr(user, 'depth_preference') and user.depth_preference is not None:
+            depth_level = user.depth_preference
+
     cached = db.query(ArticleSummary).filter(
         ArticleSummary.article_id == str(article_id),
-        ArticleSummary.mode == mode
+        ArticleSummary.mode == mode,
+        ArticleSummary.depth_level == depth_level
     ).first()
     
     if cached:
@@ -301,12 +312,6 @@ async def get_article_summary(
         }
     
     # ── 2. No cache hit — generate via Gemini ─────────────────────
-    depth_level = 5  # Default
-    if user_id:
-        from app.db import User
-        user = db.query(User).filter(User.id == user_id).first()
-        if user and hasattr(user, 'depth_preference') and user.depth_preference is not None:
-            depth_level = user.depth_preference
 
     try:
         # NewsAPI free tier truncates content (~200 chars + "[+XXX chars]").
@@ -341,6 +346,7 @@ async def get_article_summary(
         new_summary = ArticleSummary(
             article_id=str(article_id),
             mode=mode,
+            depth_level=depth_level,
             summary=summary_text,
             generated_at=now
         )
@@ -384,6 +390,86 @@ def _fallback_summary(content: str) -> str:
         return "Summary is being generated. Please try again shortly."
     text = ". ".join(sentences[:3]) + "."
     return text[:500] if len(text) <= 500 else text[:497] + "..."
+
+
+@router.post("/{article_id}/regenerate-summary", response_model=ArticleSummaryResponse)
+async def regenerate_article_summary(
+    article_id: UUID,
+    mode: str = Query("pro", pattern="^(kid|pro|skim|deep)$"),
+    user_id: Optional[str] = Depends(get_optional_user_id),
+    db: Session = Depends(get_db)
+):
+    """Force-regenerate an article summary, bypassing the cache."""
+    article = db.query(Article).filter(Article.id == str(article_id)).first()
+    if not article:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Article not found")
+
+    depth_level = 5
+    if user_id:
+        from app.db import User
+        user = db.query(User).filter(User.id == user_id).first()
+        if user and user.depth_preference is not None:
+            depth_level = user.depth_preference
+
+    # Delete any existing cached summary for this combo
+    db.query(ArticleSummary).filter(
+        ArticleSummary.article_id == str(article_id),
+        ArticleSummary.mode == mode,
+        ArticleSummary.depth_level == depth_level
+    ).delete()
+    db.commit()
+
+    # Generate fresh summary
+    content_for_summary = article.content or ""
+    is_truncated = (
+        "[+" in content_for_summary and "chars]" in content_for_summary
+    ) or len(content_for_summary) < 500
+
+    if is_truncated and article.source_url:
+        content_for_summary = await scrape_article_content(
+            article.source_url, fallback_content=content_for_summary
+        )
+
+    try:
+        category = article.category or "General News"
+        summary_text = await asyncio.wait_for(
+            gemini_service.generate_depth_calibrated_summary(
+                content=content_for_summary,
+                depth_level=depth_level,
+                category=category,
+                mode=mode
+            ),
+            timeout=30.0
+        )
+
+        now = datetime.utcnow()
+        new_summary = ArticleSummary(
+            article_id=str(article_id),
+            mode=mode,
+            depth_level=depth_level,
+            summary=summary_text,
+            generated_at=now
+        )
+        db.add(new_summary)
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+
+        return {"mode": mode, "summary": summary_text, "generated_at": now}
+    except GeminiQuotaError as e:
+        db.rollback()
+        raise HTTPException(status_code=429, detail=str(e))
+    except GeminiServiceError as e:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(e))
+    except Exception as e:
+        db.rollback()
+        return {
+            "mode": mode,
+            "summary": _fallback_summary(article.content),
+            "generated_at": datetime.utcnow()
+        }
 
 
 @router.post("/{article_id}/chat")

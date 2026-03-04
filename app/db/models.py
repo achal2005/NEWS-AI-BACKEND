@@ -81,6 +81,7 @@ class ArticleSummary(Base):
     id = Column(String(36), primary_key=True, default=generate_uuid)
     article_id = Column(String(36), ForeignKey("articles.id"), nullable=False)
     mode = Column(String(10), nullable=False)  # "kid" or "pro"
+    depth_level = Column(Integer, default=5)  # 1-10 depth calibration level
     summary = Column(Text, nullable=False)
     generated_at = Column(DateTime, default=datetime.utcnow)
     

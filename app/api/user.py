@@ -22,7 +22,13 @@ async def get_profile(
             detail="Profile not found"
         )
     
-    return profile
+    # Merge depth_preference from User model into the response
+    user = db.query(User).filter(User.id == user_id).first()
+    response = TasteProfileResponse.model_validate(profile)
+    if user and user.depth_preference is not None:
+        response.depth_preference = user.depth_preference
+    
+    return response
 
 
 @router.put("/profile", response_model=TasteProfileResponse)
@@ -51,12 +57,16 @@ async def update_profile(
         profile.topic_weights = profile_data.topic_weights
         
     # Also update the user model if depth_preference is provided
-    if profile_data.depth_preference is not None:
-        user = db.query(User).filter(User.id == user_id).first()
-        if user:
-            user.depth_preference = profile_data.depth_preference
+    user = db.query(User).filter(User.id == user_id).first()
+    if profile_data.depth_preference is not None and user:
+        user.depth_preference = profile_data.depth_preference
     
     db.commit()
     db.refresh(profile)
     
-    return profile
+    # Merge depth_preference from User model into the response
+    response = TasteProfileResponse.model_validate(profile)
+    if user and user.depth_preference is not None:
+        response.depth_preference = user.depth_preference
+    
+    return response
