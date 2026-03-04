@@ -83,9 +83,11 @@ class ArticleResponse(BaseModel):
     id: UUID
     title: str
     content: str
-    source_url: Optional[str]
-    category: Optional[str]
-    published_at: Optional[datetime]
+    source_url: Optional[str] = None
+    source_name: Optional[str] = None
+    image_url: Optional[str] = None
+    category: Optional[str] = None
+    published_at: Optional[datetime] = None
     ingested_at: datetime
     summaries: List[ArticleSummaryResponse] = []
     jargon: List[ArticleJargonResponse] = []

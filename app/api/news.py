@@ -5,6 +5,7 @@ import hashlib
 import logging
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 from datetime import datetime
 
 from app.db import get_db, Article, ArticleSummary, ArticleJargon, TasteProfile
@@ -184,6 +185,11 @@ def _store_article(item: dict, fallback_category: str, db: Session) -> int:
         published_at=pub_at,
     )
     db.add(article)
+    try:
+        db.flush()  # Attempt to write to DB — catches IntegrityError before commit
+    except IntegrityError:
+        db.rollback()  # Roll back only this article, continue with the rest
+        return 0
 
     # Emit to Kafka for brand-new articles only
     try:
