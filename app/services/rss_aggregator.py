@@ -27,6 +27,8 @@ RSS_FEEDS: List[tuple[str, str]] = [
     ("https://feeds.npr.org/1001/rss.xml", "General"),
     ("https://feeds.reuters.com/reuters/topNews", "General"),
     ("https://www.theguardian.com/world/rss", "General"),
+    ("http://rss.cnn.com/rss/edition.rss", "General"),
+    ("https://abcnews.go.com/abcnews/topstories", "General"),
 
     # ─── Technology ───
     ("https://feeds.feedburner.com/TechCrunch/", "Technology"),
@@ -34,28 +36,52 @@ RSS_FEEDS: List[tuple[str, str]] = [
     ("https://feeds.arstechnica.com/arstechnica/index", "Technology"),
     ("https://www.theverge.com/rss/index.xml", "Technology"),
     ("https://rss.nytimes.com/services/xml/rss/nyt/Technology.xml", "Technology"),
+    ("https://www.zdnet.com/news/rss.xml", "Technology"),
+    ("https://www.cnet.com/rss/news/", "Technology"),
 
     # ─── Science ───
     ("https://rss.nytimes.com/services/xml/rss/nyt/Science.xml", "Science"),
     ("https://www.newscientist.com/section/news/feed/", "Science"),
     ("https://www.theguardian.com/science/rss", "Science"),
+    ("https://www.sciencedaily.com/rss/all.xml", "Science"),
+    ("https://phys.org/rss-feed/", "Science"),
 
     # ─── Business ───
     ("https://rss.nytimes.com/services/xml/rss/nyt/Business.xml", "Business"),
     ("https://feeds.bbci.co.uk/news/business/rss.xml", "Business"),
     ("https://www.theguardian.com/business/rss", "Business"),
+    ("https://www.cnbc.com/id/100003114/device/rss/rss.html", "Business"),
+    ("https://feeds.reuters.com/reuters/businessNews", "Business"),
+    ("https://fortune.com/feed/", "Business"),
 
     # ─── Health ───
     ("https://rss.nytimes.com/services/xml/rss/nyt/Health.xml", "Health"),
     ("https://feeds.bbci.co.uk/news/health/rss.xml", "Health"),
+    ("https://www.theguardian.com/lifeandstyle/health-and-wellbeing/rss", "Health"),
+    ("https://www.webmd.com/xml/rss/rss.xml", "Health"),
+    ("https://feeds.npr.org/103537970/rss.xml", "Health"),
+    ("https://www.statnews.com/feed/", "Health"),
 
     # ─── Sports ───
     ("https://rss.nytimes.com/services/xml/rss/nyt/Sports.xml", "Sports"),
     ("https://feeds.bbci.co.uk/sport/rss.xml", "Sports"),
+    ("https://www.espn.com/espn/rss/news", "Sports"),
+    ("https://www.theguardian.com/sport/rss", "Sports"),
+    ("https://feeds.reuters.com/reuters/sportsNews", "Sports"),
+    ("https://www.cbssports.com/rss/headlines/", "Sports"),
 
     # ─── Entertainment ───
     ("https://rss.nytimes.com/services/xml/rss/nyt/Arts.xml", "Entertainment"),
     ("https://feeds.bbci.co.uk/news/entertainment_and_arts/rss.xml", "Entertainment"),
+    ("https://www.theguardian.com/culture/rss", "Entertainment"),
+    ("https://ew.com/feed/", "Entertainment"),
+    ("https://deadline.com/feed/", "Entertainment"),
+
+    # ─── Politics ───
+    ("https://rss.nytimes.com/services/xml/rss/nyt/Politics.xml", "Politics"),
+    ("https://feeds.bbci.co.uk/news/politics/rss.xml", "Politics"),
+    ("https://www.politico.com/rss/politicopicks.xml", "Politics"),
+    ("https://www.theguardian.com/politics/rss", "Politics"),
 ]
 
 
@@ -208,12 +234,10 @@ class RSSAggregatorService:
                     image_url = enc.get("href") or enc.get("url")
                     break
 
-        # Category
+        # Category — always use the default (feed-level) category so articles
+        # map cleanly to the 8 UI categories. RSS tags are too unpredictable
+        # (e.g. "Gear", "Virtual Currency", "Volcanoes").
         category = default_category
-        if hasattr(entry, "tags") and entry.tags:
-            tag = entry.tags[0].get("term", "")
-            if tag:
-                category = tag.title()
 
         return {
             "title": title,
