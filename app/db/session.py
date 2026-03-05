@@ -4,10 +4,12 @@ from app.core.config import get_settings
 
 settings = get_settings()
 
-# Fix Render's postgres:// URL (SQLAlchemy 2.0+ requires postgresql://)
+# Fix Render's postgres:// URL for SQLAlchemy 2.0+ with psycopg v3 driver
 db_url = settings.database_url
 if db_url.startswith("postgres://"):
-    db_url = db_url.replace("postgres://", "postgresql://", 1)
+    db_url = db_url.replace("postgres://", "postgresql+psycopg://", 1)
+elif db_url.startswith("postgresql://") and "+psycopg" not in db_url:
+    db_url = db_url.replace("postgresql://", "postgresql+psycopg://", 1)
 
 # Create database engine
 if db_url.startswith("sqlite"):
