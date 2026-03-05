@@ -52,6 +52,26 @@ async def lifespan(app: FastAPI):
         start_scheduler()
     except Exception as e:
         logger.warning(f"Scheduler failed to start: {e}")
+
+    # ── Keep-Alive Self-Ping (prevents Render free tier cold starts) ──
+    import asyncio
+    import httpx
+
+    async def keep_alive_ping():
+        """Ping our own /health endpoint every 14 minutes to prevent spin-down."""
+        await asyncio.sleep(60)  # Wait 1 min after startup
+        url = f"https://daily-brief-api.onrender.com/health"
+        while True:
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    r = await client.get(url)
+                    logger.info(f"Keep-alive ping: {r.status_code}")
+            except Exception as e:
+                logger.warning(f"Keep-alive ping failed: {e}")
+            await asyncio.sleep(14 * 60)  # Every 14 minutes
+
+    asyncio.create_task(keep_alive_ping())
+    logger.info("Keep-alive self-ping task started (every 14 min)")
     
     yield
     
