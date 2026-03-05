@@ -3,7 +3,9 @@ from uuid import UUID
 import asyncio
 import hashlib
 import logging
+import time
 from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy import func
@@ -18,6 +20,7 @@ from app.schemas import (
 )
 from app.services import gemini_service, news_api_service, kafka_producer
 from app.services.rss_aggregator import rss_aggregator_service
+from app.core.cache import article_list_cache
 
 logger = logging.getLogger(__name__)
 from app.services.gemini import GeminiQuotaError, GeminiServiceError
@@ -26,7 +29,7 @@ from app.services.article_scraper import scrape_article_content
 router = APIRouter(prefix="/api/news", tags=["News"])
 
 
-@router.get("", response_model=ArticleListResponse)
+@router.get("")
 async def list_articles(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
@@ -39,7 +42,20 @@ async def list_articles(
     
     If user is authenticated, filters by their preferred categories.
     Fetches live news if database is empty.
+    Uses TTL cache for repeated queries.
     """
+    t0 = time.time()
+
+    # Build cache key from query params
+    cache_key = f"articles:{user_id or 'anon'}:{category or 'all'}:{page}:{page_size}"
+    cached = article_list_cache.get(cache_key)
+    if cached:
+        logger.info(f"Cache HIT for {cache_key} ({(time.time()-t0)*1000:.1f}ms)")
+        resp = JSONResponse(content=cached)
+        resp.headers["Cache-Control"] = "public, max-age=300"
+        resp.headers["X-Cache"] = "HIT"
+        return resp
+
     query = db.query(Article)
     
     # Get user's preferred categories if authenticated
@@ -74,12 +90,24 @@ async def list_articles(
         .limit(page_size) \
         .all()
     
-    return ArticleListResponse(
+    result = ArticleListResponse(
         items=articles,
         total=total,
         page=page,
         page_size=page_size
     )
+
+    # Cache the serialized response (5 min TTL)
+    result_dict = result.model_dump(mode="json")
+    article_list_cache.set(cache_key, result_dict, ttl=300)
+
+    elapsed = (time.time() - t0) * 1000
+    logger.info(f"Cache MISS for {cache_key} ({elapsed:.1f}ms, {total} total articles)")
+
+    resp = JSONResponse(content=result_dict)
+    resp.headers["Cache-Control"] = "public, max-age=300"
+    resp.headers["X-Cache"] = "MISS"
+    return resp
 
 
 @router.get("/refresh")
@@ -94,6 +122,9 @@ async def refresh_articles(
     """
     category_list = categories.split(",") if categories else ["technology", "science", "business"]
     count = await refresh_news_from_api(categories=category_list, db=db)
+    # Invalidate article list cache so new articles appear immediately
+    invalidated = article_list_cache.invalidate("articles:")
+    logger.info(f"Invalidated {invalidated} cached article list entries")
     return {"message": f"Fetched {count} new articles", "categories": category_list}
 
 

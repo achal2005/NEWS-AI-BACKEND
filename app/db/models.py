@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, Text, Integer, Boolean, DateTime, ForeignKey, JSON, Date, Float
+from sqlalchemy import Column, String, Text, Integer, Boolean, DateTime, ForeignKey, JSON, Date, Float, Index
 from sqlalchemy.orm import relationship
 from app.db.session import Base
 
@@ -55,6 +55,10 @@ class TasteProfile(Base):
 class Article(Base):
     """News article model."""
     __tablename__ = "articles"
+    __table_args__ = (
+        Index("ix_articles_category_ingested", "category", "ingested_at"),
+        Index("ix_articles_ingested_desc", "ingested_at"),
+    )
     
     id = Column(String(36), primary_key=True, default=generate_uuid)
     title = Column(String(500), nullable=False)
