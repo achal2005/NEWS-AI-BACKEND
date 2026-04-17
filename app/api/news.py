@@ -113,6 +113,7 @@ async def list_articles(
 @router.get("/refresh")
 async def refresh_articles(
     categories: Optional[str] = Query(None, description="Comma-separated categories"),
+    user_id: str = Depends(get_current_user_id),
     db: Session = Depends(get_db)
 ):
     """

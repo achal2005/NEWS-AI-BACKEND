@@ -196,7 +196,9 @@ async def logout():
 
 @router.get("/dev-login")
 async def dev_login(db: Session = Depends(get_db)):
-    """Mock login for testing."""
+    """Mock login for testing — only available when debug=True."""
+    if not settings.debug:
+        raise HTTPException(status_code=404, detail="Not found")
     user = db.query(User).first()
     if not user:
         user = User(

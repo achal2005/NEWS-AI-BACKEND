@@ -92,9 +92,16 @@ app = FastAPI(
 )
 
 # Configure CORS
+allowed_origins = ["http://localhost:3000", "http://127.0.0.1:3000"]
+if settings.frontend_url and settings.frontend_url not in allowed_origins:
+    allowed_origins.append(settings.frontend_url)
+# Always include Vercel production URL
+if "https://news-ai-wine.vercel.app" not in allowed_origins:
+    allowed_origins.append("https://news-ai-wine.vercel.app")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000", settings.frontend_url],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
