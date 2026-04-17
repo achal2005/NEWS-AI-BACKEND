@@ -11,6 +11,11 @@ A full-stack, AI-powered personalized news aggregation platform. "The Daily Brie
 *   **Modern Newspaper UI:** Highly responsive CSS masonry/grid design built with Next.js and Tailwind CSS, featuring smooth Framer Motion animations.
 *   **Fully Deployed:** Frontend hosted on Vercel, Backend hosted on Render with a PostgreSQL database.
 
+## 🆕 Recent Updates (April 2026)
+* **Google OAuth Fix**: Migrated from the deprecated `openidconnect` endpoint to the stable `googleapis.com/oauth2/v3/userinfo` to resolve `403 disallowed_useragent` and internal 500 errors during login.
+* **Environment Configuration**: Ensured `DEBUG=true` functionality processes local authentication errors gracefully.
+* **UI/UX Polish**: Updated the frontend login flow, adding proper loading and fallback states.
+
 ## 🛠️ Tech Stack
 
 **Frontend:**
