@@ -22,6 +22,7 @@ dist/
 # Database
 *.sqlite
 *.db
+news_db.sqlite
 
 # IDE
 .idea/

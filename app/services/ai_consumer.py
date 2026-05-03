@@ -6,12 +6,14 @@ Kafka consumer that processes raw news articles:
 2. Extracts technical jargon with definitions
 3. Checks veracity using Google FactCheck API
 4. Saves processed data to PostgreSQL
+
+FIX 14: Added health endpoint with last_processed_at and articles_in_queue.
 """
 
 import json
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID
 
@@ -35,6 +37,8 @@ class AINewsConsumer:
     - Extracts technical jargon with definitions
     - Checks news veracity via FactCheck API
     - Saves all processed data to PostgreSQL
+
+    FIX 14: Tracks processing metrics for health endpoint.
     """
     
     def __init__(self):
@@ -43,6 +47,10 @@ class AINewsConsumer:
             group_id="ai-processor-group"
         )
         self.running = False
+        # FIX 14: Health tracking
+        self.last_processed_at: Optional[datetime] = None
+        self.articles_processed_count: int = 0
+        self.articles_in_queue: int = 0
     
     async def start(self):
         """Start the consumer and begin processing messages."""
@@ -56,12 +64,18 @@ class AINewsConsumer:
             async for message in self.consumer.consume():
                 if not self.running:
                     break
-                    
+
+                self.articles_in_queue += 1
                 try:
                     await self.process_article(message)
+                    # FIX 14: Update health metrics on success
+                    self.last_processed_at = datetime.now(timezone.utc)
+                    self.articles_processed_count += 1
                 except Exception as e:
                     logger.error(f"Error processing article: {e}")
                     continue
+                finally:
+                    self.articles_in_queue = max(0, self.articles_in_queue - 1)
                     
         except Exception as e:
             logger.error(f"Consumer error: {e}")
@@ -74,6 +88,15 @@ class AINewsConsumer:
         await self.consumer.stop()
         logger.info("AI News Consumer stopped")
     
+    def get_health(self) -> dict:
+        """FIX 14: Return health metrics for the consumer."""
+        return {
+            "status": "running" if self.running else "stopped",
+            "last_processed_at": self.last_processed_at.isoformat() if self.last_processed_at else None,
+            "articles_processed_count": self.articles_processed_count,
+            "articles_in_queue": self.articles_in_queue,
+        }
+
     async def process_article(self, article_data: dict):
         """
         Process a raw article with AI services.
@@ -178,7 +201,7 @@ class AINewsConsumer:
                 
                 if existing_kid:
                     existing_kid.summary = kid_summary
-                    existing_kid.generated_at = datetime.utcnow()
+                    existing_kid.generated_at = datetime.now(timezone.utc)
                 else:
                     db.add(ArticleSummary(
                         article_id=article_id,
@@ -195,7 +218,7 @@ class AINewsConsumer:
                 
                 if existing_pro:
                     existing_pro.summary = pro_summary
-                    existing_pro.generated_at = datetime.utcnow()
+                    existing_pro.generated_at = datetime.now(timezone.utc)
                 else:
                     db.add(ArticleSummary(
                         article_id=article_id,
@@ -235,8 +258,31 @@ class AINewsConsumer:
 ai_news_consumer = AINewsConsumer()
 
 
+# ── FIX 14: Standalone health server for the consumer ─────────────────
+async def _run_health_server():
+    """Run a simple HTTP health server on port 8001 for the consumer."""
+    from aiohttp import web
+
+    async def health_handler(request):
+        return web.json_response(ai_news_consumer.get_health())
+
+    app = web.Application()
+    app.router.add_get("/health/consumer", health_handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", 8001)
+    await site.start()
+    logger.info("Consumer health server started on port 8001")
+
+
 async def run_consumer():
-    """Entry point to run the consumer."""
+    """Entry point to run the consumer with health endpoint."""
+    # Start health server in background
+    try:
+        asyncio.create_task(_run_health_server())
+    except Exception as e:
+        logger.warning(f"Health server failed to start: {e}")
+
     await ai_news_consumer.start()
 
 

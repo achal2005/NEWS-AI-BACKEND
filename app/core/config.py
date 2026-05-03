@@ -1,8 +1,19 @@
+import logging
 from pydantic_settings import BaseSettings
+from pydantic import field_validator
 from typing import Optional
 from functools import lru_cache
 from pathlib import Path
-import secrets
+
+logger = logging.getLogger(__name__)
+
+# Known dev-default secrets that must never be used in production
+_DEV_DEFAULT_SECRETS = {
+    "CHANGE-ME-in-production-use-a-real-secret-key-at-least-64-chars",
+    "dev-secret-please-change-in-production",
+    "changeme",
+    "secret",
+}
 
 
 def _find_env_file() -> str:
@@ -39,8 +50,8 @@ class Settings(BaseSettings):
     news_api_key: Optional[str] = None
     news_api_base_url: str = "https://newsapi.org/v2"
     
-    # JWT Authentication
-    jwt_secret_key: str = secrets.token_urlsafe(64)
+    # JWT Authentication — NO default; Pydantic raises if env var is missing
+    jwt_secret_key: str
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 1440  # 24 hours
     
@@ -48,6 +59,17 @@ class Settings(BaseSettings):
     app_name: str = "AI News Ecosystem"
     debug: bool = False
     frontend_url: str = "http://localhost:3000"
+
+    @field_validator("jwt_secret_key")
+    @classmethod
+    def validate_jwt_secret(cls, v: str) -> str:
+        """Reject secrets shorter than 32 characters."""
+        if len(v) < 32:
+            raise ValueError(
+                "JWT_SECRET_KEY must be at least 32 characters long. "
+                "Generate one with: python -c \"import secrets; print(secrets.token_urlsafe(64))\""
+            )
+        return v
     
     class Config:
         env_file = _find_env_file()

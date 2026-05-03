@@ -1,7 +1,7 @@
 from datetime import timedelta
 from typing import Optional, List
-from fastapi import APIRouter, Depends, HTTPException, status, Query
-from fastapi.responses import RedirectResponse
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
+from fastapi.responses import RedirectResponse, JSONResponse
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
 
@@ -51,7 +51,7 @@ async def get_google_auth_url():
     return {"auth_url": auth_url}
 
 
-@router.post("/google/callback", response_model=Token)
+@router.post("/google/callback")
 async def google_callback(
     request: GoogleAuthRequest,
     db: Session = Depends(get_db)
@@ -60,6 +60,7 @@ async def google_callback(
     Handle Google OAuth callback.
     
     Exchanges authorization code for user info and creates/returns JWT.
+    FIX 3: Sets a single HttpOnly cookie named `auth_token`.
     """
     try:
         # Authenticate with Google
@@ -92,11 +93,23 @@ async def google_callback(
         # Create access token
         access_token = create_access_token(data={"sub": str(user.id)})
         
-        return {
+        # FIX 3: Single HttpOnly cookie — no JS-accessible cookie
+        is_production = not settings.debug
+        response = JSONResponse(content={
             "access_token": access_token,
             "token_type": "bearer",
             "profile_complete": user.profile_complete,
-        }
+        })
+        response.set_cookie(
+            key="auth_token",          # FIX 3: renamed from "token"
+            value=access_token,
+            httponly=True,              # Prevents JS access (XSS protection)
+            secure=is_production,       # HTTPS only in production
+            samesite="lax",
+            max_age=86400,              # FIX 3: 24h (matches JWT expiry)
+            path="/",
+        )
+        return response
         
     except Exception as e:
         raise HTTPException(
@@ -187,11 +200,13 @@ async def get_current_user(
 @router.post("/logout")
 async def logout():
     """
-    Logout user (client should clear token).
+    Logout user.
     
-    For server-side session invalidation, implement token blacklist.
+    FIX 3: Clears the single HttpOnly auth cookie.
     """
-    return {"message": "Logged out successfully"}
+    response = JSONResponse(content={"message": "Logged out successfully"})
+    response.delete_cookie(key="auth_token", path="/")  # FIX 3: renamed
+    return response
 
 
 @router.get("/dev-login")
@@ -222,4 +237,16 @@ async def dev_login(db: Session = Depends(get_db)):
         db.commit()
 
     token = create_access_token(data={"sub": str(user.id)})
-    return {"access_token": token, "profile_complete": True}
+
+    # FIX 3: Dev login also sets HttpOnly cookie for consistency
+    response = JSONResponse(content={"access_token": token, "profile_complete": True})
+    response.set_cookie(
+        key="auth_token",
+        value=token,
+        httponly=True,
+        secure=False,  # Dev mode
+        samesite="lax",
+        max_age=86400,
+        path="/",
+    )
+    return response

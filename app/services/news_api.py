@@ -236,7 +236,7 @@ class NewsAPIService:
         
         # Clean up any HTML tags that NewsAPI might have leaked in the fallback content
         try:
-            actual_content = BeautifulSoup(raw_fallback, "lxml").get_text(separator=' ', strip=True)
+            actual_content = BeautifulSoup(raw_fallback, "html.parser").get_text(separator=' ', strip=True)
         except Exception:
             actual_content = raw_fallback
         

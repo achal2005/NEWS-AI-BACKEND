@@ -1,13 +1,24 @@
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 import logging
+import os
+import asyncio
 
-from app.core.config import get_settings
+from app.core.config import get_settings, _DEV_DEFAULT_SECRETS
 from app.db import Base, engine
 from app.api import auth_router, news_router, user_router, gamification_router
 from app.services import kafka_producer
 from app.core.scheduler import start_scheduler
+
+# ── slowapi rate limiting (FIX 5) ────────────────────────────────────
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+
+limiter = Limiter(key_func=get_remote_address)
 
 settings = get_settings()
 
@@ -21,6 +32,29 @@ async def lifespan(app: FastAPI):
     """Application lifespan manager."""
     # Startup
     logger.info("Starting up AI News Ecosystem...")
+
+    # ── FIX 1: JWT secret startup guard ───────────────────────────────
+    if not settings.debug:
+        if settings.jwt_secret_key in _DEV_DEFAULT_SECRETS:
+            raise RuntimeError(
+                "FATAL: JWT_SECRET_KEY is set to a known dev default. "
+                "Set a strong, unique secret in production. "
+                "Generate one with: python -c \"import secrets; print(secrets.token_urlsafe(64))\""
+            )
+    else:
+        if settings.jwt_secret_key in _DEV_DEFAULT_SECRETS:
+            logger.warning(
+                "⚠️  WARNING: JWT_SECRET_KEY is a known dev default! "
+                "Do NOT deploy to production with this value."
+            )
+        if len(settings.jwt_secret_key) < 64:
+            logger.warning(
+                "⚠️  WARNING: JWT_SECRET_KEY is shorter than 64 characters. "
+                "Consider using a longer key for production."
+            )
+
+    # ── FIX 12: asyncio lock for SQLite quiz creation ─────────────────
+    app.state.quiz_creation_lock = asyncio.Lock()
     
     # Create database tables
     Base.metadata.create_all(bind=engine)
@@ -54,24 +88,27 @@ async def lifespan(app: FastAPI):
         logger.warning(f"Scheduler failed to start: {e}")
 
     # ── Keep-Alive Self-Ping (prevents Render free tier cold starts) ──
-    import asyncio
     import httpx
 
-    async def keep_alive_ping():
-        """Ping our own /health endpoint every 14 minutes to prevent spin-down."""
-        await asyncio.sleep(60)  # Wait 1 min after startup
-        url = f"https://daily-brief-api.onrender.com/health"
-        while True:
-            try:
-                async with httpx.AsyncClient(timeout=10.0) as client:
-                    r = await client.get(url)
-                    logger.info(f"Keep-alive ping: {r.status_code}")
-            except Exception as e:
-                logger.warning(f"Keep-alive ping failed: {e}")
-            await asyncio.sleep(14 * 60)  # Every 14 minutes
+    render_url = os.environ.get("RENDER_EXTERNAL_URL")
+    if render_url:
+        async def keep_alive_ping():
+            """Ping our own /health endpoint every 14 minutes to prevent spin-down."""
+            await asyncio.sleep(60)  # Wait 1 min after startup
+            url = f"{render_url}/health"
+            while True:
+                try:
+                    async with httpx.AsyncClient(timeout=10.0) as client:
+                        r = await client.get(url)
+                        logger.info(f"Keep-alive ping: {r.status_code}")
+                except Exception as e:
+                    logger.warning(f"Keep-alive ping failed: {e}")
+                await asyncio.sleep(14 * 60)  # Every 14 minutes
 
-    asyncio.create_task(keep_alive_ping())
-    logger.info("Keep-alive self-ping task started (every 14 min)")
+        asyncio.create_task(keep_alive_ping())
+        logger.info("Keep-alive self-ping task started (every 14 min)")
+    else:
+        logger.info("RENDER_EXTERNAL_URL not set, skipping keep-alive ping")
     
     yield
     
@@ -91,13 +128,19 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+# ── FIX 5: Attach slowapi limiter to app ─────────────────────────────
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
+
 # Configure CORS
 allowed_origins = ["http://localhost:3000", "http://127.0.0.1:3000"]
 if settings.frontend_url and settings.frontend_url not in allowed_origins:
     allowed_origins.append(settings.frontend_url)
-# Always include Vercel production URL
-if "https://news-ai-wine.vercel.app" not in allowed_origins:
-    allowed_origins.append("https://news-ai-wine.vercel.app")
+# Include production URL from environment (e.g. Vercel deployment)
+vercel_url = os.environ.get("VERCEL_URL", "https://news-ai-wine.vercel.app")
+if vercel_url and vercel_url not in allowed_origins:
+    allowed_origins.append(vercel_url)
 
 app.add_middleware(
     CORSMiddleware,
@@ -128,4 +171,3 @@ async def root():
 async def health_check():
     """Health check endpoint."""
     return {"status": "healthy"}
-

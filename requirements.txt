@@ -1,4 +1,4 @@
-﻿# FastAPI and server
+# FastAPI and server
 fastapi>=0.110.0
 uvicorn[standard]>=0.27.0
 python-multipart>=0.0.6
@@ -11,7 +11,7 @@ alembic>=1.13.1
 # Authentication
 python-jose[cryptography]>=3.3.0
 passlib[bcrypt]>=1.7.4
-bcrypt>=4.1.2
+bcrypt>=3.2.0,<4.0.0
 
 # Kafka
 aiokafka>=0.10.0
@@ -27,9 +27,6 @@ python-dotenv>=1.0.0
 # HTTP client for external APIs
 httpx>=0.26.0
 
-# Async support
-asyncpg>=0.29.0
-
 # RSS feed parsing
 feedparser>=6.0.0
 
@@ -37,6 +34,8 @@ feedparser>=6.0.0
 apscheduler>=3.10.4
 beautifulsoup4
 
+# Rate limiting (FIX 5)
+slowapi>=0.1.9
 
 email-validator
 

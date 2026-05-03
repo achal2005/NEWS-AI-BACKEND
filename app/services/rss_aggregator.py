@@ -3,11 +3,13 @@ RSS Feed Aggregator Service — unlimited free news from major outlets.
 
 No API key required. Parses RSS/Atom feeds from Reuters, BBC, NPR,
 The Guardian, Al Jazeera, TechCrunch, Wired, Ars Technica, and more.
+
+FIX 9: Improved per-feed failure handling with detailed logging.
 """
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from email.utils import parsedate_to_datetime
 
@@ -101,6 +103,7 @@ class RSSAggregatorService:
         """
         Fetch articles from every feed (optionally filtered by category).
 
+        FIX 9: Handles per-feed failures gracefully and logs a summary.
         Returns a list of article dicts in the same shape as NewsAPIService.
         """
         selected_feeds = self.feeds
@@ -115,12 +118,34 @@ class RSSAggregatorService:
             self._fetch_feed(url, default_cat, max_per_feed)
             for url, default_cat in selected_feeds
         ]
+        # FIX 9: return_exceptions=True (already was, but now we handle them)
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         articles: List[Dict[str, Any]] = []
-        for r in results:
-            if isinstance(r, list):
+        success_count = 0
+        fail_count = 0
+        total_feeds = len(selected_feeds)
+
+        for i, r in enumerate(results):
+            feed_url = selected_feeds[i][0] if i < len(selected_feeds) else "unknown"
+            if isinstance(r, Exception):
+                # FIX 9: Log warning with feed URL and exception, skip this feed
+                fail_count += 1
+                logger.warning(
+                    f"RSS feed failed: {feed_url} — {type(r).__name__}: {r}"
+                )
+            elif isinstance(r, list):
+                success_count += 1
                 articles.extend(r)
+            else:
+                fail_count += 1
+                logger.warning(f"RSS feed returned unexpected result type from {feed_url}: {type(r)}")
+
+        # FIX 9: Summary log
+        logger.info(
+            f"RSS fetch complete: {success_count}/{total_feeds} feeds, "
+            f"{len(articles)} articles"
+        )
 
         return articles
 
@@ -206,9 +231,9 @@ class RSSAggregatorService:
                 try:
                     published_at = parsedate_to_datetime(raw).isoformat()
                 except Exception:
-                    published_at = datetime.utcnow().isoformat()
+                    published_at = datetime.now(timezone.utc).isoformat()
             else:
-                published_at = datetime.utcnow().isoformat()
+                published_at = datetime.now(timezone.utc).isoformat()
 
         # Source
         link = entry.get("link", "")

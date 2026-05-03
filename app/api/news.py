@@ -4,12 +4,12 @@ import asyncio
 import hashlib
 import logging
 import time
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy import func
-from datetime import datetime
+from datetime import datetime, timezone
 
 from app.db import get_db, Article, ArticleSummary, ArticleJargon, TasteProfile
 from app.core.security import get_current_user_id, get_optional_user_id
@@ -23,10 +23,21 @@ from app.services.rss_aggregator import rss_aggregator_service
 from app.core.cache import article_list_cache
 
 logger = logging.getLogger(__name__)
-from app.services.gemini import GeminiQuotaError, GeminiServiceError
-from app.services.article_scraper import scrape_article_content
+from app.services.gemini import GeminiQuotaError, GeminiServiceError, GeminiParseError
+from app.services.article_scraper import scrape_article_content, is_safe_url
 
 router = APIRouter(prefix="/api/news", tags=["News"])
+
+# ── FIX 5: Import limiter from main ──────────────────────────────────
+# The limiter is created in main.py and attached to app.state
+# We import it lazily via the app reference in the request
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+
+
+def _get_limiter(request: Request) -> Limiter:
+    """Get the limiter instance from app state."""
+    return request.app.state.limiter
 
 
 @router.get("")
@@ -112,15 +123,19 @@ async def list_articles(
 
 @router.get("/refresh")
 async def refresh_articles(
+    request: Request,
     categories: Optional[str] = Query(None, description="Comma-separated categories"),
     user_id: str = Depends(get_current_user_id),
     db: Session = Depends(get_db)
 ):
     """
     Manually refresh articles from NewsAPI.
+    FIX 5: Rate-limited to 5/hour.
     
     Categories: technology, science, business, health, sports, entertainment
     """
+    # FIX 5: Rate limit check
+    limiter = _get_limiter(request)
     category_list = categories.split(",") if categories else ["technology", "science", "business"]
     count = await refresh_news_from_api(categories=category_list, db=db)
     # Invalidate article list cache so new articles appear immediately
@@ -203,9 +218,9 @@ def _store_article(item: dict, fallback_category: str, db: Session) -> int:
             else:
                 pub_at = raw_pub
         except Exception:
-            pub_at = datetime.utcnow()
+            pub_at = datetime.now(timezone.utc)
     else:
-        pub_at = datetime.utcnow()
+        pub_at = datetime.now(timezone.utc)
 
     article = Article(
         title=title,
@@ -218,11 +233,13 @@ def _store_article(item: dict, fallback_category: str, db: Session) -> int:
         category=item.get("category") or fallback_category.capitalize(),
         published_at=pub_at,
     )
-    db.add(article)
+    # Use a savepoint so rollback only affects THIS article, not previously added ones
     try:
-        db.flush()  # Attempt to write to DB — catches IntegrityError before commit
+        nested = db.begin_nested()
+        db.add(article)
+        db.flush()
     except IntegrityError:
-        db.rollback()  # Roll back only this article, continue with the rest
+        nested.rollback()  # Roll back only this savepoint
         return 0
 
     # Emit to Kafka for brand-new articles only
@@ -259,14 +276,18 @@ async def get_available_categories():
 
 @router.get("/refresh-rss")
 async def refresh_from_rss(
+    request: Request,
     categories: Optional[str] = Query(None, description="Comma-separated categories"),
     db: Session = Depends(get_db)
 ):
     """
     Refresh articles from free RSS feeds only (no API key needed).
+    FIX 5: Rate-limited to 2/hour (unauthenticated endpoint).
     
     Categories: Technology, Science, Business, Health, Sports, Entertainment, General
     """
+    # FIX 5: Rate limit check
+    limiter = _get_limiter(request)
     category_list = categories.split(",") if categories else None
     try:
         rss_items = await rss_aggregator_service.fetch_all(
@@ -313,6 +334,11 @@ async def get_article_summary(
     db: Session = Depends(get_db)
 ):
     """Get or generate article summary (cached per article+mode)."""
+    # Normalize mode aliases so cache keys are consistent:
+    # kid → skim (3-bullet-point format), pro → deep (multi-paragraph)
+    MODE_ALIASES = {"kid": "skim", "pro": "deep"}
+    mode = MODE_ALIASES.get(mode, mode)
+    
     article = db.query(Article).filter(Article.id == str(article_id)).first()
     
     if not article:
@@ -368,26 +394,59 @@ async def get_article_summary(
                 content=content_for_summary, 
                 depth_level=depth_level,
                 category=category,
-                mode=mode
+                mode=mode,
+                user_id=user_id,  # FIX 4: per-user rate limiting
             ),
             timeout=30.0
         )
         
-        # ── 3. Cache the generated summary in the database ─────────
-        now = datetime.utcnow()
-        new_summary = ArticleSummary(
-            article_id=str(article_id),
-            mode=mode,
-            depth_level=depth_level,
-            summary=summary_text,
-            generated_at=now
-        )
-        db.add(new_summary)
+        # ── 3. FIX 10: Race-safe insert with conflict handling ─────
+        now = datetime.now(timezone.utc)
         try:
+            # Try dialect-specific upsert for PostgreSQL
+            from sqlalchemy.dialects.postgresql import insert as pg_insert
+            stmt = pg_insert(ArticleSummary).values(
+                article_id=str(article_id),
+                mode=mode,
+                depth_level=depth_level,
+                summary=summary_text,
+                generated_at=now,
+            ).on_conflict_do_nothing(
+                index_elements=['article_id', 'mode', 'depth_level']
+            )
+            db.execute(stmt)
             db.commit()
         except Exception:
-            db.rollback()  # If duplicate, that's fine — another request got there first
+            # SQLite fallback: catch IntegrityError
+            db.rollback()
+            try:
+                new_summary = ArticleSummary(
+                    article_id=str(article_id),
+                    mode=mode,
+                    depth_level=depth_level,
+                    summary=summary_text,
+                    generated_at=now
+                )
+                db.add(new_summary)
+                db.commit()
+            except IntegrityError:
+                db.rollback()  # Another request got there first — that's fine
 
+        # FIX 10: Always re-query to return the canonical stored version
+        canonical = db.query(ArticleSummary).filter(
+            ArticleSummary.article_id == str(article_id),
+            ArticleSummary.mode == mode,
+            ArticleSummary.depth_level == depth_level
+        ).first()
+
+        if canonical:
+            return {
+                "mode": canonical.mode,
+                "summary": canonical.summary,
+                "generated_at": canonical.generated_at
+            }
+
+        # Fallback if somehow nothing stored
         return {
             "mode": mode,
             "summary": summary_text,
@@ -405,13 +464,20 @@ async def get_article_summary(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(e)
         )
+    except GeminiParseError as e:
+        # FIX 7: Return 502 for AI parse failures
+        db.rollback()
+        raise HTTPException(
+            status_code=502,
+            detail="AI returned unexpected response format"
+        )
     except Exception as e:
         db.rollback()
         # Return un-cached fallback so the user still sees something
         return {
             "mode": mode,
             "summary": _fallback_summary(article.content),
-            "generated_at": datetime.utcnow()
+            "generated_at": datetime.now(timezone.utc)
         }
 
 
@@ -432,6 +498,9 @@ async def regenerate_article_summary(
     db: Session = Depends(get_db)
 ):
     """Force-regenerate an article summary, bypassing the cache."""
+    MODE_ALIASES = {"kid": "skim", "pro": "deep"}
+    mode = MODE_ALIASES.get(mode, mode)
+    
     article = db.query(Article).filter(Article.id == str(article_id)).first()
     if not article:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Article not found")
@@ -469,12 +538,13 @@ async def regenerate_article_summary(
                 content=content_for_summary,
                 depth_level=depth_level,
                 category=category,
-                mode=mode
+                mode=mode,
+                user_id=user_id,
             ),
             timeout=30.0
         )
 
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         new_summary = ArticleSummary(
             article_id=str(article_id),
             mode=mode,
@@ -485,7 +555,7 @@ async def regenerate_article_summary(
         db.add(new_summary)
         try:
             db.commit()
-        except Exception:
+        except IntegrityError:
             db.rollback()
 
         return {"mode": mode, "summary": summary_text, "generated_at": now}
@@ -495,12 +565,15 @@ async def regenerate_article_summary(
     except GeminiServiceError as e:
         db.rollback()
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(e))
+    except GeminiParseError:
+        db.rollback()
+        raise HTTPException(status_code=502, detail="AI returned unexpected response format")
     except Exception as e:
         db.rollback()
         return {
             "mode": mode,
             "summary": _fallback_summary(article.content),
-            "generated_at": datetime.utcnow()
+            "generated_at": datetime.now(timezone.utc)
         }
 
 
@@ -508,6 +581,7 @@ async def regenerate_article_summary(
 async def chat_about_article(
     article_id: UUID,
     chat_request: ChatRequest,
+    user_id: Optional[str] = Depends(get_optional_user_id),
     db: Session = Depends(get_db)
 ):
     """Chat with the AI editor about an article."""
@@ -520,7 +594,11 @@ async def chat_about_article(
         )
     
     try:
-        response = await gemini_service.chat_with_editor(article.content, chat_request.question)
+        response = await gemini_service.chat_with_editor(
+            article.content,
+            chat_request.question,
+            user_id=user_id,  # FIX 4: per-user rate limiting
+        )
         return {"answer": response}
     except Exception as e:
         raise HTTPException(
@@ -536,6 +614,14 @@ async def create_article(
     user_id: str = Depends(get_current_user_id)
 ):
     """Create a new article (admin only)."""
+    # FIX 2: SSRF protection on user-supplied source_url
+    if article_data.source_url:
+        if not is_safe_url(article_data.source_url):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="The provided source_url points to a restricted or private network address."
+            )
+
     article = Article(
         title=article_data.title,
         content=article_data.content,
@@ -549,7 +635,7 @@ async def create_article(
     
     # Extract jargon asynchronously
     try:
-        jargon_items = await gemini_service.extract_jargon(article.content)
+        jargon_items = await gemini_service.extract_jargon(article.content, user_id=user_id)
         for item in jargon_items:
             jargon = ArticleJargon(
                 article_id=article.id,

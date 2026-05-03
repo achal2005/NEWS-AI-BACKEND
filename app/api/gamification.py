@@ -1,10 +1,11 @@
-from datetime import datetime, date, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import func, case
+from sqlalchemy.exc import IntegrityError
 
 from app.db import (
     get_db, User, PointsLedger, WeeklyQuiz, QuizQuestion, 
@@ -16,6 +17,12 @@ from app.schemas import (
     LeaderboardEntry, QuizResponse, QuizSubmit, QuizResultResponse
 )
 from app.services import gemini_service
+from app.services.gemini import GeminiParseError  # FIX 7
+from app.core.time_utils import get_current_week_start, get_current_week_end  # FIX 8
+
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["Gamification"])
 
@@ -81,9 +88,18 @@ async def record_reading_time(
                 user_id=user_id,
                 points=10,
                 action_type="read_article",
-                reference_id=body.article_id
+                reference_id=str(body.article_id)
             )
-            db.add(ledger_entry)
+            try:
+                db.add(ledger_entry)
+                db.flush()  # Raises IntegrityError on duplicate
+            except IntegrityError:
+                db.rollback()  # Safely ignore duplicate award
+                return {
+                    "recorded_seconds": body.seconds,
+                    "total_reading_time_seconds": user.total_reading_time_seconds,
+                    "articles_read_count": user.articles_read_count
+                }
     
     db.commit()
     
@@ -107,65 +123,82 @@ async def get_leaderboard(
     - Reading time
     - Total points
     """
-    # Get current week start (Monday)
-    today = date.today()
-    week_start = today - timedelta(days=today.weekday())
-    week_start_dt = datetime.combine(week_start, datetime.min.time())
+    # FIX 8: Use canonical timezone-aware week start
+    week_start_dt = get_current_week_start()
     
-    # Get all users with their weekly stats
-    users_query = db.query(User).all()
+    # Aggregated query: get weekly points per user in one query
+    weekly_points_subq = (
+        db.query(
+            PointsLedger.user_id,
+            func.sum(PointsLedger.points).label("weekly_points")
+        )
+        .filter(PointsLedger.earned_at >= week_start_dt)
+        .group_by(PointsLedger.user_id)
+        .subquery()
+    )
     
-    entries: list[dict] = []
-    for user in users_query:
-        # Calculate weekly points
-        weekly_points = db.query(func.sum(PointsLedger.points)).filter(
-            PointsLedger.user_id == user.id,
-            PointsLedger.earned_at >= week_start_dt
-        ).scalar() or 0
-        
-        # Calculate quiz accuracy for this week
-        quiz_attempts = db.query(QuizAttempt).filter(
-            QuizAttempt.user_id == user.id,
-            QuizAttempt.completed_at >= week_start_dt
-        ).all()
-        
-        total_score = sum(a.score for a in quiz_attempts)
-        max_score = sum(a.max_score for a in quiz_attempts)
-        quiz_accuracy = (total_score / max_score * 100) if max_score > 0 else None
-        
-        # Get weekly reading stats
-        reading_points = db.query(PointsLedger).filter(
-            PointsLedger.user_id == user.id,
+    # Aggregated query: weekly articles read per user
+    articles_read_subq = (
+        db.query(
+            PointsLedger.user_id,
+            func.count(PointsLedger.id).label("articles_read")
+        )
+        .filter(
             PointsLedger.action_type == "read_article",
             PointsLedger.earned_at >= week_start_dt
-        ).count()
-        
-        entries.append({
-            "user_id": user.id,
-            "display_name": user.display_name,
-            "weekly_points": weekly_points,
-            "quiz_accuracy": round(quiz_accuracy, 1) if quiz_accuracy else None,
-            "reading_time_minutes": (user.total_reading_time_seconds or 0) // 60,
-            "articles_read": reading_points
-        })
+        )
+        .group_by(PointsLedger.user_id)
+        .subquery()
+    )
     
-    # Sort by weekly points (primary) and quiz accuracy (secondary)
-    entries.sort(key=lambda x: (x["weekly_points"], x["quiz_accuracy"] or 0), reverse=True)
+    # Aggregated query: quiz accuracy per user
+    quiz_accuracy_subq = (
+        db.query(
+            QuizAttempt.user_id,
+            func.sum(QuizAttempt.score).label("total_score"),
+            func.sum(QuizAttempt.max_score).label("total_max_score")
+        )
+        .filter(QuizAttempt.completed_at >= week_start_dt)
+        .group_by(QuizAttempt.user_id)
+        .subquery()
+    )
     
-    # Add ranks
+    # Join all together in a single query
+    results = (
+        db.query(
+            User.id,
+            User.display_name,
+            User.total_reading_time_seconds,
+            func.coalesce(weekly_points_subq.c.weekly_points, 0).label("weekly_points"),
+            func.coalesce(articles_read_subq.c.articles_read, 0).label("articles_read"),
+            quiz_accuracy_subq.c.total_score,
+            quiz_accuracy_subq.c.total_max_score,
+        )
+        .outerjoin(weekly_points_subq, User.id == weekly_points_subq.c.user_id)
+        .outerjoin(articles_read_subq, User.id == articles_read_subq.c.user_id)
+        .outerjoin(quiz_accuracy_subq, User.id == quiz_accuracy_subq.c.user_id)
+        .order_by(func.coalesce(weekly_points_subq.c.weekly_points, 0).desc())
+        .limit(100)
+        .all()
+    )
+    
     leaderboard_entries = []
     user_rank = None
-    for rank, entry in enumerate(entries[:100], 1):
+    for rank, row in enumerate(results, 1):
+        quiz_accuracy = None
+        if row.total_max_score and row.total_max_score > 0:
+            quiz_accuracy = round(row.total_score / row.total_max_score * 100, 1)
+        
         leaderboard_entries.append(LeaderboardEntry(
             rank=rank,
-            user_id=entry["user_id"],
-            display_name=entry["display_name"],
-            weekly_points=entry["weekly_points"],
-            quiz_accuracy=entry["quiz_accuracy"],
-            reading_time_minutes=entry["reading_time_minutes"],
-            articles_read=entry["articles_read"]
+            user_id=row.id,
+            display_name=row.display_name,
+            weekly_points=row.weekly_points,
+            quiz_accuracy=quiz_accuracy,
+            reading_time_minutes=(row.total_reading_time_seconds or 0) // 60,
+            articles_read=row.articles_read
         ))
-        if str(entry["user_id"]) == user_id:
+        if str(row.id) == user_id:
             user_rank = rank
     
     return LeaderboardResponse(
@@ -179,64 +212,102 @@ async def get_leaderboard(
 
 @router.get("/quiz/weekly", response_model=QuizResponse)
 async def get_weekly_quiz(
+    request: Request,
+    user_id: Optional[str] = Depends(get_optional_user_id),
     db: Session = Depends(get_db)
 ):
-    """Get the current weekly quiz."""
-    today = date.today()
-    week_start = today - timedelta(days=today.weekday())
-    week_end = week_start + timedelta(days=6)
+    """
+    Get the current weekly quiz.
+    FIX 12 + FIX 15: Lock-then-generate pattern to prevent wasted Gemini calls.
+    """
+    # FIX 8: Use canonical timezone-aware week boundaries
+    week_start = get_current_week_start()
+    week_end = get_current_week_end()
     
+    # ── Step 1: Check if quiz already exists ──────────────────────────
     quiz = db.query(WeeklyQuiz).filter(
         WeeklyQuiz.week_start == week_start,
         WeeklyQuiz.is_active == True
     ).first()
     
-    needs_questions = False
-    
-    if not quiz:
-        # Create new quiz if none exists
-        quiz = WeeklyQuiz(
-            week_start=week_start,
-            week_end=week_end,
-            is_active=True
-        )
-        db.add(quiz)
-        db.commit()
-        db.refresh(quiz)
-        needs_questions = True
-    elif len(quiz.questions) == 0:
-        # Quiz exists but has no questions — regenerate
-        needs_questions = True
-    
-    if needs_questions:
-        # Generate questions from recent articles
-        recent_articles = db.query(Article).order_by(
-            Article.ingested_at.desc()
-        ).limit(5).all()
-        
-        for article in recent_articles:
+    if quiz and len(quiz.questions) > 0:
+        return quiz  # Quiz exists with questions — return immediately
+
+    # ── Step 2: Quiz doesn't exist or has no questions — acquire lock ──
+    # FIX 12: Use asyncio.Lock for SQLite, advisory lock for Postgres
+    quiz_lock = request.app.state.quiz_creation_lock
+
+    async with quiz_lock:
+        # ── Step 3: Re-check inside the lock (another request may have created it) ──
+        quiz = db.query(WeeklyQuiz).filter(
+            WeeklyQuiz.week_start == week_start,
+            WeeklyQuiz.is_active == True
+        ).first()
+
+        if quiz and len(quiz.questions) > 0:
+            return quiz  # Created by another request while we waited
+
+        needs_questions = False
+
+        if not quiz:
+            # Create new quiz — handle race condition with IntegrityError
+            quiz = WeeklyQuiz(
+                week_start=week_start,
+                week_end=week_end,
+                is_active=True
+            )
             try:
-                questions = await gemini_service.generate_quiz_questions(
-                    article_content=article.content, 
-                    num_questions=2
-                )
-                for q in questions:
-                    question = QuizQuestion(
-                        quiz_id=quiz.id,
-                        article_id=article.id,
-                        question=q.get("question", ""),
-                        options=q.get("options", []),
-                        correct_answer=q.get("correct_answer", ""),
-                        hint=q.get("hint"),
-                        points_value=20
+                db.add(quiz)
+                db.commit()
+                db.refresh(quiz)
+                needs_questions = True
+            except IntegrityError:
+                db.rollback()
+                # Another request created it first — fetch it
+                quiz = db.query(WeeklyQuiz).filter(
+                    WeeklyQuiz.week_start == week_start,
+                    WeeklyQuiz.is_active == True
+                ).first()
+                if quiz and len(quiz.questions) > 0:
+                    return quiz
+                needs_questions = len(quiz.questions) == 0 if quiz else False
+        elif len(quiz.questions) == 0:
+            needs_questions = True
+
+        # ── Step 4: FIX 12+15: Only call Gemini INSIDE the lock ──────
+        if needs_questions and quiz:
+            # Generate questions from recent articles
+            recent_articles = db.query(Article).order_by(
+                Article.ingested_at.desc()
+            ).limit(5).all()
+
+            for article in recent_articles:
+                try:
+                    questions = await gemini_service.generate_quiz_questions(
+                        article_content=article.content,
+                        num_questions=2,
+                        user_id=user_id,
                     )
-                    db.add(question)
-            except Exception:
-                continue
-        
-        db.commit()
-        db.refresh(quiz)
-    
+                    for q in questions:
+                        question = QuizQuestion(
+                            quiz_id=quiz.id,
+                            article_id=article.id,
+                            question=q.get("question", ""),
+                            options=q.get("options", []),
+                            correct_answer=q.get("correct_answer", ""),
+                            hint=q.get("hint"),
+                            points_value=20
+                        )
+                        db.add(question)
+                except GeminiParseError as e:
+                    logger.warning(f"Quiz generation parse error for article {article.id}: {e}")
+                    continue
+                except Exception:
+                    continue
+
+            db.commit()
+            db.refresh(quiz)
+
     return quiz
 
 
@@ -286,6 +357,7 @@ async def get_quiz_by_id(
 @router.post("/quiz/generate")
 async def generate_quiz_from_verified_news(
     num_questions: int = 3,
+    user_id: Optional[str] = Depends(get_optional_user_id),
     db: Session = Depends(get_db)
 ):
     """
@@ -296,9 +368,8 @@ async def generate_quiz_from_verified_news(
     - Uses Gemini to create multiple-choice questions
     - Returns questions without saving (for preview)
     """
-    today = date.today()
-    week_start = today - timedelta(days=today.weekday())
-    week_start_dt = datetime.combine(week_start, datetime.min.time())
+    # FIX 8: Use canonical week start
+    week_start_dt = get_current_week_start()
     
     # Get most recent articles this week
     verified_articles = db.query(Article).filter(
@@ -319,12 +390,19 @@ async def generate_quiz_from_verified_news(
         try:
             questions = await gemini_service.generate_quiz_questions(
                 article_content=article.content,
-                num_questions=num_questions // len(verified_articles) or 1
+                num_questions=num_questions // len(verified_articles) or 1,
+                user_id=user_id,
             )
             for q in questions:
                 q["article_id"] = str(article.id)
                 q["article_title"] = article.title
             all_questions.extend(questions)
+        except GeminiParseError:
+            # FIX 7: Return 502 for AI parse failures
+            raise HTTPException(
+                status_code=502,
+                detail="AI returned unexpected response format"
+            )
         except Exception as e:
             continue
     
@@ -370,12 +448,20 @@ async def submit_quiz(
         QuizAttempt.quiz_id == first_question.quiz_id
     ).first()
     if existing_attempt:
+        # Return actual previous results
+        prev_correct = db.query(QuizAnswer).filter(
+            QuizAnswer.attempt_id == existing_attempt.id,
+            QuizAnswer.is_correct == True
+        ).count()
+        prev_total = db.query(QuizAnswer).filter(
+            QuizAnswer.attempt_id == existing_attempt.id
+        ).count()
         return QuizResultResponse(
             score=existing_attempt.score,
             max_score=existing_attempt.max_score,
             points_earned=0,
-            correct_answers=0,
-            total_questions=len(submission.answers)
+            correct_answers=prev_correct,
+            total_questions=prev_total
         )
     
     # Create attempt
@@ -416,16 +502,18 @@ async def submit_quiz(
         attempt.max_score += question.points_value
     
     attempt.score = total_points
-    attempt.completed_at = datetime.utcnow()
+    attempt.completed_at = datetime.now(timezone.utc)
     db.commit()
+    # Calculate actual points earned (base 50 + correct answer points)
+    actual_points_earned = total_points + 50 if total_points > 0 else 0
     
     # Award points
     if total_points > 0:
         points_entry = PointsLedger(
             user_id=user_id,
-            points=total_points + 50,  # Base + correct answers
+            points=actual_points_earned,
             action_type="quiz_complete",
-            reference_id=attempt.id
+            reference_id=str(attempt.id)
         )
         db.add(points_entry)
         db.commit()
@@ -433,7 +521,7 @@ async def submit_quiz(
     return QuizResultResponse(
         score=total_points,
         max_score=attempt.max_score,
-        points_earned=total_points + 50,
+        points_earned=actual_points_earned,
         correct_answers=correct_count,
         total_questions=len(submission.answers)
     )
