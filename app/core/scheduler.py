@@ -1,7 +1,6 @@
 import logging
 import asyncio
 from datetime import datetime, timedelta
-from functools import partial
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
@@ -13,9 +12,9 @@ scheduler = AsyncIOScheduler()
 
 async def scheduled_news_refresh():
     """Background task to refresh news every 6 hours.
-    
-    DB session creation is offloaded to a thread executor to avoid
-    blocking the async event loop with synchronous SQLAlchemy operations.
+
+    Creates a fresh DB session, runs the refresh, and ensures
+    the session is always closed + rolled back on error.
     """
     logger.info("Starting scheduled news refresh...")
 
@@ -23,18 +22,23 @@ async def scheduled_news_refresh():
     from app.db.session import SessionLocal
     from app.api.news import refresh_news_from_api
 
-    loop = asyncio.get_event_loop()
-
-    # Create session in executor (sync operation)
-    db = await loop.run_in_executor(None, SessionLocal)
+    # Create session synchronously (it's cheap and thread-safe)
+    db = SessionLocal()
     try:
         categories = ["technology", "science", "business", "health", "sports", "entertainment", "general"]
         count = await refresh_news_from_api(categories, db)
         logger.info(f"Scheduled refresh complete. Fetched {count} new articles.")
     except Exception as e:
         logger.error(f"Scheduled refresh failed: {e}")
+        try:
+            db.rollback()
+        except Exception:
+            pass
     finally:
-        await loop.run_in_executor(None, db.close)
+        try:
+            db.close()
+        except Exception:
+            pass
 
 def start_scheduler():
     """Start the background scheduler — refreshes news every 6 hours + once at startup."""

@@ -174,7 +174,13 @@ async def refresh_news_from_api(categories: List[str], db: Session) -> int:
     except Exception as e:
         logger.warning(f"RSS refresh error: {e}")
 
-    db.commit()
+    # Commit all successfully-added articles
+    try:
+        db.commit()
+    except Exception as e:
+        logger.error(f"Failed to commit articles: {e}")
+        db.rollback()
+
     return articles_fetched
 
 
@@ -241,10 +247,17 @@ def _store_article(item: dict, fallback_category: str, db: Session) -> int:
     except IntegrityError:
         nested.rollback()  # Roll back only this savepoint
         return 0
+    except Exception as exc:
+        # Any other DB error — rollback savepoint to avoid tainted session
+        try:
+            nested.rollback()
+        except Exception:
+            pass
+        logger.warning(f"Failed to store article '{title[:50]}': {exc}")
+        return 0
 
-    # Emit to Kafka for brand-new articles only
+    # Emit to Kafka for brand-new articles only (fire-and-forget)
     try:
-        import asyncio
         asyncio.get_event_loop().create_task(
             kafka_producer.publish_raw_article({
                 "title": title,
