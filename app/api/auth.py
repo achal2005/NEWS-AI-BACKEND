@@ -100,13 +100,15 @@ async def google_callback(
             "token_type": "bearer",
             "profile_complete": user.profile_complete,
         })
+        # Cross-origin (Vercel frontend ↔ Render backend) requires
+        # SameSite=none + Secure=true. Lax only works same-origin.
         response.set_cookie(
-            key="auth_token",          # FIX 3: renamed from "token"
+            key="auth_token",
             value=access_token,
-            httponly=True,              # Prevents JS access (XSS protection)
-            secure=is_production,       # HTTPS only in production
-            samesite="lax",
-            max_age=86400,              # FIX 3: 24h (matches JWT expiry)
+            httponly=True,
+            secure=True,                # Always true (SameSite=none requires it)
+            samesite="none",            # Required for cross-origin cookies
+            max_age=86400,
             path="/",
         )
         return response
@@ -205,7 +207,13 @@ async def logout():
     FIX 3: Clears the single HttpOnly auth cookie.
     """
     response = JSONResponse(content={"message": "Logged out successfully"})
-    response.delete_cookie(key="auth_token", path="/")  # FIX 3: renamed
+    # Must match the same domain/path/samesite/secure attributes used in set_cookie
+    response.delete_cookie(
+        key="auth_token",
+        path="/",
+        samesite="none",
+        secure=True,
+    )
     return response
 
 
@@ -244,8 +252,8 @@ async def dev_login(db: Session = Depends(get_db)):
         key="auth_token",
         value=token,
         httponly=True,
-        secure=False,  # Dev mode
-        samesite="lax",
+        secure=False,  # Dev mode — localhost is HTTP
+        samesite="lax",  # Same-origin OK for localhost
         max_age=86400,
         path="/",
     )
