@@ -147,6 +147,19 @@ async def refresh_articles(
 async def refresh_news_from_api(categories: List[str], db: Session) -> int:
     """Fetch news from NewsAPI AND RSS feeds, store in database."""
     articles_fetched: int = 0
+    batch_count: int = 0
+    BATCH_SIZE = 50  # Commit every 50 articles to avoid deep savepoint nesting
+
+    def _commit_batch():
+        nonlocal batch_count
+        if batch_count > 0:
+            try:
+                db.commit()
+                batch_count = 0
+            except Exception as e:
+                logger.error(f"Failed to commit batch: {e}")
+                db.rollback()
+                batch_count = 0
 
     # ── 1. NewsAPI (if key is configured) ─────────────────────────
     for category in categories:
@@ -157,9 +170,16 @@ async def refresh_news_from_api(categories: List[str], db: Session) -> int:
             )
 
             for item in news_items:
-                articles_fetched += _store_article(item, category, db)
+                stored = _store_article(item, category, db)
+                articles_fetched += stored
+                batch_count += stored
+                if batch_count >= BATCH_SIZE:
+                    _commit_batch()
         except Exception as e:
             logger.warning(f"NewsAPI fetch failed for {category}: {e}")
+
+    # Commit any remaining NewsAPI articles before starting RSS
+    _commit_batch()
 
     # ── 2. RSS Feeds ──────────────────────────────────────────────
     try:
@@ -168,18 +188,18 @@ async def refresh_news_from_api(categories: List[str], db: Session) -> int:
             max_per_feed=15,
         )
         for item in rss_items:
-            articles_fetched += _store_article(
+            stored = _store_article(
                 item, item.get("category", "General"), db
             )
+            articles_fetched += stored
+            batch_count += stored
+            if batch_count >= BATCH_SIZE:
+                _commit_batch()
     except Exception as e:
         logger.warning(f"RSS refresh error: {e}")
 
-    # Commit all successfully-added articles
-    try:
-        db.commit()
-    except Exception as e:
-        logger.error(f"Failed to commit articles: {e}")
-        db.rollback()
+    # Final commit for remaining articles
+    _commit_batch()
 
     return articles_fetched
 
