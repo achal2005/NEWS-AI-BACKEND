@@ -15,7 +15,7 @@ elif db_url.startswith("postgresql://") and "+psycopg" not in db_url:
 if db_url.startswith("sqlite"):
     engine = create_engine(
         db_url,
-        connect_args={"check_same_thread": False}
+        connect_args={"check_same_thread": False, "timeout": 30}
     )
 else:
     engine = create_engine(

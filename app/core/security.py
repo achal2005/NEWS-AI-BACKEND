@@ -9,8 +9,8 @@ from app.core.config import get_settings
 
 settings = get_settings()
 
-# Password hashing context
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# Password hashing context — R19: explicit 12 rounds for strong hashing
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__rounds=12)
 
 # OAuth2 scheme for token authentication (Bearer header — used by Swagger UI)
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=False)
@@ -109,14 +109,20 @@ async def get_optional_user_id(
 ) -> Optional[str]:
     """
     Extract user ID from JWT token, or return None if not authenticated.
-    FIX 3: Reads from HttpOnly cookie first, then Bearer header.
+    R13: Distinguishes between 'no token' (returns None) and
+    'invalid/expired token' (raises 401) to prevent silent identity loss.
     """
     token = _extract_token(request, bearer_token)
     if not token:
-        return None
+        return None  # No token provided — genuinely anonymous
     
+    # Token was provided — it MUST be valid, otherwise 401
     payload = decode_access_token(token)
     if payload is None:
-        return None
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     
     return payload.get("sub")

@@ -1,3 +1,4 @@
+import os
 from datetime import timedelta
 from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
@@ -10,6 +11,7 @@ from app.core.security import create_access_token, get_current_user_id
 from app.core.config import get_settings
 from app.services import google_oauth_service
 from app.schemas import UserResponse, Token
+from app.core.limiter import limiter
 
 settings = get_settings()
 router = APIRouter(prefix="/api/auth", tags=["Authentication"])
@@ -36,7 +38,8 @@ class AuthUrlResponse(BaseModel):
 # ============ Google OAuth Endpoints ============
 
 @router.get("/google", response_model=AuthUrlResponse)
-async def get_google_auth_url():
+@limiter.limit("10/minute")
+async def get_google_auth_url(request: Request):
     """
     Get Google OAuth authorization URL.
     
@@ -52,8 +55,10 @@ async def get_google_auth_url():
 
 
 @router.post("/google/callback")
+@limiter.limit("5/minute")
 async def google_callback(
-    request: GoogleAuthRequest,
+    request: Request,
+    auth_request: GoogleAuthRequest,
     db: Session = Depends(get_db)
 ):
     """
@@ -64,7 +69,7 @@ async def google_callback(
     """
     try:
         # Authenticate with Google
-        google_user = await google_oauth_service.authenticate(request.code)
+        google_user = await google_oauth_service.authenticate(auth_request.code)
         
         # Check if user exists
         user = db.query(User).filter(User.email == google_user.email).first()
@@ -93,11 +98,9 @@ async def google_callback(
         # Create access token
         access_token = create_access_token(data={"sub": str(user.id)})
         
-        # FIX 3: Single HttpOnly cookie — no JS-accessible cookie
-        is_production = not settings.debug
+        # FIX 3+R1: HttpOnly cookie is the SOLE auth transport.
+        # JWT is NOT returned in JSON body to prevent XSS token theft.
         response = JSONResponse(content={
-            "access_token": access_token,
-            "token_type": "bearer",
             "profile_complete": user.profile_complete,
         })
         # Cross-origin (Vercel frontend ↔ Render backend) requires
@@ -121,7 +124,9 @@ async def google_callback(
 
 
 @router.post("/complete-profile", response_model=UserResponse)
+@limiter.limit("5/minute")
 async def complete_profile(
+    request: Request,
     profile_data: CompleteProfileRequest,
     user_id: str = Depends(get_current_user_id),
     db: Session = Depends(get_db)
@@ -218,9 +223,17 @@ async def logout():
 
 
 @router.get("/dev-login")
-async def dev_login(db: Session = Depends(get_db)):
-    """Mock login for testing — only available when debug=True."""
-    if not settings.debug:
+@limiter.limit("5/hour")
+async def dev_login(request: Request, db: Session = Depends(get_db)):
+    """
+    Mock login for testing — only available when:
+    1. debug=True
+    2. ENVIRONMENT=development
+    3. DEV_LOGIN_ENABLED=true (explicit opt-in, R9)
+    """
+    is_development = os.environ.get("ENVIRONMENT", "development").lower() == "development"
+    dev_login_enabled = os.environ.get("DEV_LOGIN_ENABLED", "false").lower() == "true"
+    if not settings.debug or not is_development or not dev_login_enabled:
         raise HTTPException(status_code=404, detail="Not found")
     user = db.query(User).first()
     if not user:
@@ -246,8 +259,8 @@ async def dev_login(db: Session = Depends(get_db)):
 
     token = create_access_token(data={"sub": str(user.id)})
 
-    # FIX 3: Dev login also sets HttpOnly cookie for consistency
-    response = JSONResponse(content={"access_token": token, "profile_complete": True})
+    # R1: Dev login also only sets HttpOnly cookie — no JWT in JSON body
+    response = JSONResponse(content={"profile_complete": True})
     response.set_cookie(
         key="auth_token",
         value=token,

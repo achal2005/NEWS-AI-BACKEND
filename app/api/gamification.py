@@ -4,7 +4,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from sqlalchemy import func, case
+from sqlalchemy import func, case, update
 from sqlalchemy.exc import IntegrityError
 
 from app.db import (
@@ -64,9 +64,12 @@ async def record_reading_time(
     db: Session = Depends(get_db)
 ):
     """Record reading time for an article."""
-    user = db.query(User).filter(User.id == user_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+    # R5: Atomic counter updates — prevents lost updates from concurrent tabs
+    db.execute(
+        update(User)
+        .where(User.id == user_id)
+        .values(total_reading_time_seconds=func.coalesce(User.total_reading_time_seconds, 0) + body.seconds)
+    )
     
     # Deduplication: check if points were already awarded for this article
     already_awarded = db.query(PointsLedger).filter(
@@ -75,12 +78,14 @@ async def record_reading_time(
         PointsLedger.reference_id == str(body.article_id)
     ).first()
     
-    # Update cumulative reading time
-    user.total_reading_time_seconds = (user.total_reading_time_seconds or 0) + body.seconds
-    
     # Only increment articles_read_count and award points if first time reading
     if not already_awarded:
-        user.articles_read_count = (user.articles_read_count or 0) + 1
+        # R5: Atomic increment
+        db.execute(
+            update(User)
+            .where(User.id == user_id)
+            .values(articles_read_count=func.coalesce(User.articles_read_count, 0) + 1)
+        )
         
         # Award points for completing an article (if reading time > 30 seconds)
         if body.seconds >= 30:
@@ -95,18 +100,20 @@ async def record_reading_time(
                 db.flush()  # Raises IntegrityError on duplicate
             except IntegrityError:
                 db.rollback()  # Safely ignore duplicate award
+                user = db.query(User).filter(User.id == user_id).first()
                 return {
                     "recorded_seconds": body.seconds,
-                    "total_reading_time_seconds": user.total_reading_time_seconds,
-                    "articles_read_count": user.articles_read_count
+                    "total_reading_time_seconds": user.total_reading_time_seconds if user else 0,
+                    "articles_read_count": user.articles_read_count if user else 0,
                 }
     
     db.commit()
     
+    user = db.query(User).filter(User.id == user_id).first()
     return {
         "recorded_seconds": body.seconds,
-        "total_reading_time_seconds": user.total_reading_time_seconds,
-        "articles_read_count": user.articles_read_count
+        "total_reading_time_seconds": user.total_reading_time_seconds if user else 0,
+        "articles_read_count": user.articles_read_count if user else 0,
     }
 
 
@@ -313,12 +320,14 @@ async def get_weekly_quiz(
 
 @router.get("/quiz/list")
 async def list_available_quizzes(
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    limit: int = 20,
+    offset: int = 0
 ):
     """List all active quizzes (for quiz selection UI)."""
     quizzes = db.query(WeeklyQuiz).filter(
         WeeklyQuiz.is_active == True
-    ).order_by(WeeklyQuiz.week_start.desc()).all()
+    ).order_by(WeeklyQuiz.week_start.desc()).limit(limit).offset(offset).all()
 
     return {
         "quizzes": [
@@ -357,7 +366,7 @@ async def get_quiz_by_id(
 @router.post("/quiz/generate")
 async def generate_quiz_from_verified_news(
     num_questions: int = 3,
-    user_id: Optional[str] = Depends(get_optional_user_id),
+    user_id: str = Depends(get_current_user_id),  # R3: Require auth to prevent AI quota abuse
     db: Session = Depends(get_db)
 ):
     """
@@ -507,7 +516,7 @@ async def submit_quiz(
     # Calculate actual points earned (base 50 + correct answer points)
     actual_points_earned = total_points + 50 if total_points > 0 else 0
     
-    # Award points
+    # Award points — R6: graceful handling of race condition
     if total_points > 0:
         points_entry = PointsLedger(
             user_id=user_id,
@@ -515,8 +524,17 @@ async def submit_quiz(
             action_type="quiz_complete",
             reference_id=str(attempt.id)
         )
-        db.add(points_entry)
-        db.commit()
+        try:
+            db.add(points_entry)
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            # Another request already awarded points — return existing
+            existing = db.query(PointsLedger).filter_by(
+                user_id=user_id, action_type="quiz_complete",
+                reference_id=str(attempt.id)
+            ).first()
+            actual_points_earned = existing.points if existing else 0
     
     return QuizResultResponse(
         score=total_points,

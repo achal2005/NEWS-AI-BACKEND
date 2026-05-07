@@ -125,8 +125,9 @@ class GeminiService:
         self._anonymous_limiter = TokenBucketRateLimiter(max_tokens=3, refill_rate=3 / 60)
 
         # FIX 4: Separate circuit breakers per concern
-        self._summary_breaker = CircuitBreaker(failure_threshold=5, recovery_timeout=300)
-        self._chat_breaker = CircuitBreaker(failure_threshold=5, recovery_timeout=300)
+        # R16: Reduced cooldown from 300s to 60s for transient errors
+        self._summary_breaker = CircuitBreaker(failure_threshold=5, recovery_timeout=60)
+        self._chat_breaker = CircuitBreaker(failure_threshold=5, recovery_timeout=60)
 
     def _get_user_limiter(self, user_id: Optional[str]) -> TokenBucketRateLimiter:
         """Get or create a per-user rate limiter. Uses LRU eviction."""

@@ -32,9 +32,9 @@ class User(Base):
     articles_read_count = Column(Integer, default=0)  # Total articles read
     
     # Relationships
-    taste_profile = relationship("TasteProfile", back_populates="user", uselist=False)
-    points = relationship("PointsLedger", back_populates="user")
-    quiz_attempts = relationship("QuizAttempt", back_populates="user")
+    taste_profile = relationship("TasteProfile", back_populates="user", uselist=False, cascade="all, delete-orphan")
+    points = relationship("PointsLedger", back_populates="user", cascade="all, delete-orphan")
+    quiz_attempts = relationship("QuizAttempt", back_populates="user", cascade="all, delete-orphan")
 
 
 class TasteProfile(Base):
@@ -58,6 +58,7 @@ class Article(Base):
     __table_args__ = (
         Index("ix_articles_category_ingested", "category", "ingested_at"),
         Index("ix_articles_ingested_desc", "ingested_at"),
+        Index("ix_articles_category_published", "category", "published_at"),  # R4
     )
     
     id = Column(String(36), primary_key=True, default=generate_uuid)
@@ -73,9 +74,9 @@ class Article(Base):
     ingested_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)  # FIX 6: indexed
     
     # Relationships
-    summaries = relationship("ArticleSummary", back_populates="article")
-    jargon = relationship("ArticleJargon", back_populates="article")
-    quiz_questions = relationship("QuizQuestion", back_populates="article")
+    summaries = relationship("ArticleSummary", back_populates="article", cascade="all, delete-orphan")
+    jargon = relationship("ArticleJargon", back_populates="article", cascade="all, delete-orphan")
+    quiz_questions = relationship("QuizQuestion", back_populates="article", cascade="all, delete-orphan")
 
 
 class ArticleSummary(Base):
@@ -119,6 +120,7 @@ class PointsLedger(Base):
         UniqueConstraint('user_id', 'action_type', 'reference_id', name='uq_points_user_action_ref'),
         Index('ix_points_user_id', 'user_id'),          # FIX 6
         Index('ix_points_earned_at', 'earned_at'),       # FIX 6
+        Index('ix_points_user_action', 'user_id', 'action_type'),  # R4: leaderboard queries
     )
     
     id = Column(String(36), primary_key=True, default=generate_uuid)
@@ -147,8 +149,8 @@ class WeeklyQuiz(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     
     # Relationships
-    questions = relationship("QuizQuestion", back_populates="quiz")
-    attempts = relationship("QuizAttempt", back_populates="quiz")
+    questions = relationship("QuizQuestion", back_populates="quiz", cascade="all, delete-orphan")
+    attempts = relationship("QuizAttempt", back_populates="quiz", cascade="all, delete-orphan")
 
 
 class QuizQuestion(Base):
@@ -176,6 +178,7 @@ class QuizAttempt(Base):
     __table_args__ = (
         Index('ix_quiz_attempt_user', 'user_id'),
         Index('ix_quiz_attempt_quiz', 'quiz_id'),
+        Index('ix_quiz_attempt_user_quiz', 'user_id', 'quiz_id'),  # R4: submission checks
     )
     
     id = Column(String(36), primary_key=True, default=generate_uuid)
@@ -189,7 +192,7 @@ class QuizAttempt(Base):
     # Relationships
     user = relationship("User", back_populates="quiz_attempts")
     quiz = relationship("WeeklyQuiz", back_populates="attempts")
-    answers = relationship("QuizAnswer", back_populates="attempt")
+    answers = relationship("QuizAnswer", back_populates="attempt", cascade="all, delete-orphan")
 
 
 class QuizAnswer(Base):

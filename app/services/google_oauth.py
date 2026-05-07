@@ -7,6 +7,9 @@ import urllib.parse
 import json
 import base64
 
+from google.oauth2 import id_token as google_id_token
+from google.auth.transport import requests as google_auth_requests
+
 from app.core.config import get_settings
 
 settings = get_settings()
@@ -28,30 +31,29 @@ class GoogleUser:
     verified_email: bool = True
 
 
-def _decode_id_token_unverified(id_token: str) -> Optional[Dict[str, Any]]:
+def _verify_id_token(token: str, client_id: str) -> Optional[Dict[str, Any]]:
     """
-    Decode the ID token payload WITHOUT signature verification.
+    Verify and decode Google ID token WITH full signature verification.
     
-    This is safe because we received the token directly from Google's
-    token endpoint over HTTPS (not from the client). We use this to
-    extract user info without an extra HTTP call.
+    Validates:
+    - RSA signature against Google's JWKS endpoint
+    - 'iss' claim (must be accounts.google.com)
+    - 'aud' claim (must match our GOOGLE_CLIENT_ID)
+    - 'exp' claim (must not be expired)
     """
     try:
-        # JWT = header.payload.signature — we want the payload
-        parts = id_token.split(".")
-        if len(parts) != 3:
-            return None
-        
-        # Base64url decode the payload (add padding if needed)
-        payload_b64 = parts[1]
-        padding = 4 - len(payload_b64) % 4
-        if padding != 4:
-            payload_b64 += "=" * padding
-        
-        payload_bytes = base64.urlsafe_b64decode(payload_b64)
-        return json.loads(payload_bytes)
+        # google-auth library handles JWKS fetch, signature, iss, aud, exp
+        claims = google_id_token.verify_oauth2_token(
+            token,
+            google_auth_requests.Request(),
+            audience=client_id,
+        )
+        return claims
+    except ValueError as e:
+        logger.warning(f"ID token verification failed: {e}")
+        return None
     except Exception as e:
-        logger.warning(f"Failed to decode ID token: {e}")
+        logger.warning(f"Unexpected error verifying ID token: {e}")
         return None
 
 
@@ -166,12 +168,12 @@ class GoogleOAuthService:
         """
         tokens = await self.exchange_code_for_tokens(code)
         
-        # Primary path: extract user info from ID token (faster, no extra call)
+        # Primary path: verify and extract user info from ID token (secure + fast)
         id_token = tokens.get("id_token")
         if id_token:
-            claims = _decode_id_token_unverified(id_token)
+            claims = _verify_id_token(id_token, self.client_id)
             if claims and claims.get("email"):
-                logger.info("Extracted user info from ID token (no extra HTTP call)")
+                logger.info("Extracted user info from verified ID token")
                 return GoogleUser(
                     id=claims.get("sub", ""),
                     email=claims["email"],

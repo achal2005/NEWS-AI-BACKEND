@@ -114,8 +114,14 @@ class RSSAggregatorService:
                 if cat.lower() in cats_lower
             ]
 
+        semaphore = asyncio.Semaphore(10)
+
+        async def sem_fetch(url, default_cat, max_items):
+            async with semaphore:
+                return await self._fetch_feed(url, default_cat, max_items)
+
         tasks = [
-            self._fetch_feed(url, default_cat, max_per_feed)
+            sem_fetch(url, default_cat, max_per_feed)
             for url, default_cat in selected_feeds
         ]
         # FIX 9: return_exceptions=True (already was, but now we handle them)
@@ -175,7 +181,10 @@ class RSSAggregatorService:
                     logger.warning(f"Feed {url} returned {resp.status_code}")
                     return []
 
-                feed = feedparser.parse(resp.text)
+                # FIX 7: Offload synchronous feedparser to thread pool
+                loop = asyncio.get_running_loop()
+                feed = await loop.run_in_executor(None, feedparser.parse, resp.text)
+                
                 items: List[Dict[str, Any]] = []
 
                 for entry in feed.entries[:max_items]:

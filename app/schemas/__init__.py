@@ -106,7 +106,13 @@ class ArticleListResponse(BaseModel):
 
 class ChatRequest(BaseModel):
     """Schema for chat request."""
-    question: str
+    question: str = Field(..., max_length=500, description="User question, max 500 chars to prevent abuse")
+
+
+class SummaryRequest(BaseModel):
+    """R11: Schema for summary request with bounded depth_level."""
+    depth_level: int = Field(default=5, ge=1, le=10, description="Summary complexity 1-10")
+    mode: str = Field(default="pro", pattern="^(kid|pro|skim|deep)$")
 
 
 # ============ Profile Schemas ============

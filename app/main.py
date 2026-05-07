@@ -13,12 +13,11 @@ from app.services import kafka_producer
 from app.core.scheduler import start_scheduler
 
 # ── slowapi rate limiting (FIX 5) ────────────────────────────────────
-from slowapi import Limiter, _rate_limit_exceeded_handler
-from slowapi.util import get_remote_address
+from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 
-limiter = Limiter(key_func=get_remote_address)
+from app.core.limiter import limiter
 
 settings = get_settings()
 
@@ -52,6 +51,13 @@ async def lifespan(app: FastAPI):
                 "⚠️  WARNING: JWT_SECRET_KEY is shorter than 64 characters. "
                 "Consider using a longer key for production."
             )
+
+    # R9: Warn if dev-login is enabled
+    if os.environ.get("DEV_LOGIN_ENABLED", "false").lower() == "true":
+        logger.warning(
+            "⚠️  WARNING: DEV_LOGIN_ENABLED=true — dev-login bypass is active! "
+            "Disable this in production environments."
+        )
 
     # ── FIX 12: asyncio lock for SQLite quiz creation ─────────────────
     app.state.quiz_creation_lock = asyncio.Lock()
@@ -91,6 +97,7 @@ async def lifespan(app: FastAPI):
     import httpx
 
     render_url = os.environ.get("RENDER_EXTERNAL_URL")
+    keep_alive_task = None  # R18: Store reference for cancellation
     if render_url:
         async def keep_alive_ping():
             """Ping our own /health endpoint every 14 minutes to prevent spin-down."""
@@ -102,10 +109,13 @@ async def lifespan(app: FastAPI):
                         r = await client.get(url)
                         logger.info(f"Keep-alive ping: {r.status_code}")
                 except Exception as e:
-                    logger.warning(f"Keep-alive ping failed: {e}")
+                    logger.warning(f"Keep-alive ping failed, will retry: {e}")
+                
+                # Sleep is outside the try block so it always waits before next ping
+                # even if the request fails
                 await asyncio.sleep(14 * 60)  # Every 14 minutes
 
-        asyncio.create_task(keep_alive_ping())
+        keep_alive_task = asyncio.create_task(keep_alive_ping())
         logger.info("Keep-alive self-ping task started (every 14 min)")
     else:
         logger.info("RENDER_EXTERNAL_URL not set, skipping keep-alive ping")
@@ -114,6 +124,16 @@ async def lifespan(app: FastAPI):
     
     # Shutdown
     logger.info("Shutting down...")
+
+    # R18: Cancel keep-alive task to prevent accumulation on hot reload
+    if keep_alive_task is not None:
+        keep_alive_task.cancel()
+        try:
+            await keep_alive_task
+        except asyncio.CancelledError:
+            pass
+        logger.info("Keep-alive task cancelled")
+
     try:
         await kafka_producer.stop()
     except Exception:
@@ -139,8 +159,12 @@ if settings.frontend_url and settings.frontend_url not in allowed_origins:
     allowed_origins.append(settings.frontend_url)
 # Include production URL from environment (e.g. Vercel deployment)
 vercel_url = os.environ.get("VERCEL_URL", "https://news-ai-wine.vercel.app")
-if vercel_url and vercel_url not in allowed_origins:
-    allowed_origins.append(vercel_url)
+if vercel_url:
+    # Vercel env var sometimes omits protocol
+    if not vercel_url.startswith("http"):
+        vercel_url = f"https://{vercel_url}"
+    if vercel_url not in allowed_origins:
+        allowed_origins.append(vercel_url)
 
 app.add_middleware(
     CORSMiddleware,

@@ -1,5 +1,6 @@
 from typing import Optional, List
 from uuid import UUID
+from urllib.parse import urlparse, urlunparse, parse_qs, urlencode
 import asyncio
 import hashlib
 import logging
@@ -204,9 +205,40 @@ async def refresh_news_from_api(categories: List[str], db: Session) -> int:
     return articles_fetched
 
 
+# ── R7: Tracking parameters stripped during URL normalization ─────────
+_TRACKING_PARAMS = {
+    "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
+    "ref", "fbclid", "gclid", "ncid", "sr_share", "_hsenc", "_hsmi",
+    "mc_cid", "mc_eid", "source", "soc_src", "soc_trk",
+}
+
+
+def _normalize_url(url: str) -> str:
+    """R7: Normalize URL before hashing to prevent duplicates from tracking params,
+    scheme differences, trailing slashes, and case variations."""
+    try:
+        parsed = urlparse(url)
+        # Force HTTPS, lowercase hostname
+        scheme = "https"
+        netloc = (parsed.netloc or "").lower()
+        # Remove trailing slash from path (unless path is just "/")
+        path = parsed.path.rstrip("/") or "/"
+        # Strip tracking query params
+        if parsed.query:
+            qs = parse_qs(parsed.query, keep_blank_values=False)
+            filtered = {k: v for k, v in qs.items() if k.lower() not in _TRACKING_PARAMS}
+            query = urlencode(filtered, doseq=True) if filtered else ""
+        else:
+            query = ""
+        return urlunparse((scheme, netloc, path, "", query, ""))
+    except Exception:
+        return url  # Fallback to raw URL if parsing fails
+
+
 def _compute_url_hash(url: str) -> str:
-    """Compute SHA-256 hash of a URL for fast deduplication."""
-    return hashlib.sha256(url.encode("utf-8")).hexdigest()
+    """Compute SHA-256 hash of a normalized URL for fast deduplication (R7)."""
+    normalized = _normalize_url(url)
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
 def _store_article(item: dict, fallback_category: str, db: Session) -> int:
@@ -311,11 +343,13 @@ async def get_available_categories():
 async def refresh_from_rss(
     request: Request,
     categories: Optional[str] = Query(None, description="Comma-separated categories"),
+    user_id: str = Depends(get_current_user_id),  # R2: Require authentication
     db: Session = Depends(get_db)
 ):
     """
     Refresh articles from free RSS feeds only (no API key needed).
-    FIX 5: Rate-limited to 2/hour (unauthenticated endpoint).
+    R2: Now requires authentication to prevent unauthenticated DoS.
+    FIX 5: Rate-limited to 2/hour.
     
     Categories: Technology, Science, Business, Health, Sports, Entertainment, General
     """
@@ -527,7 +561,7 @@ def _fallback_summary(content: str) -> str:
 async def regenerate_article_summary(
     article_id: UUID,
     mode: str = Query("pro", pattern="^(kid|pro|skim|deep)$"),
-    user_id: Optional[str] = Depends(get_optional_user_id),
+    user_id: str = Depends(get_current_user_id),  # R3: Require auth to prevent AI quota abuse
     db: Session = Depends(get_db)
 ):
     """Force-regenerate an article summary, bypassing the cache."""
@@ -614,7 +648,7 @@ async def regenerate_article_summary(
 async def chat_about_article(
     article_id: UUID,
     chat_request: ChatRequest,
-    user_id: Optional[str] = Depends(get_optional_user_id),
+    user_id: str = Depends(get_current_user_id),  # R3: Require auth to prevent AI quota abuse
     db: Session = Depends(get_db)
 ):
     """Chat with the AI editor about an article."""
