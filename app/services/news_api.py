@@ -82,9 +82,17 @@ class NewsAPIService:
                 data = response.json()
                 articles = data.get("articles", [])
                 
-                # Transform to our format
-                transformed_coroutines = [self._transform_article(article) for article in articles if article.get("content") or article.get("description")]
-                result: List[Dict[str, Any]] = list(await asyncio.gather(*transformed_coroutines))
+                # Transform to our format — process in batches of 5 to limit
+                # peak memory from concurrent HTTP scraping + BeautifulSoup parsing
+                eligible = [a for a in articles if a.get("content") or a.get("description")]
+                result: List[Dict[str, Any]] = []
+                BATCH_SIZE = 5
+                for i in range(0, len(eligible), BATCH_SIZE):
+                    batch = eligible[i:i + BATCH_SIZE]
+                    batch_results = await asyncio.gather(
+                        *(self._transform_article(a) for a in batch)
+                    )
+                    result.extend(batch_results)
                 return result
                 
         except Exception as e:
@@ -141,8 +149,16 @@ class NewsAPIService:
                 data = response.json()
                 articles = data.get("articles", [])
                 
-                transformed_coroutines = [self._transform_article(article) for article in articles if article.get("content") or article.get("description")]
-                result: List[Dict[str, Any]] = list(await asyncio.gather(*transformed_coroutines))
+                # Batch scraping to limit peak memory
+                eligible = [a for a in articles if a.get("content") or a.get("description")]
+                result: List[Dict[str, Any]] = []
+                BATCH_SIZE = 5
+                for i in range(0, len(eligible), BATCH_SIZE):
+                    batch = eligible[i:i + BATCH_SIZE]
+                    batch_results = await asyncio.gather(
+                        *(self._transform_article(a) for a in batch)
+                    )
+                    result.extend(batch_results)
                 return result
                 
         except Exception as e:

@@ -103,17 +103,18 @@ async def lifespan(app: FastAPI):
             """Ping our own /health endpoint every 14 minutes to prevent spin-down."""
             await asyncio.sleep(60)  # Wait 1 min after startup
             url = f"{render_url}/health"
-            while True:
-                try:
-                    async with httpx.AsyncClient(timeout=10.0) as client:
+            # Reuse a single client to avoid connection pool memory leaks
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                while True:
+                    try:
                         r = await client.get(url)
                         logger.info(f"Keep-alive ping: {r.status_code}")
-                except Exception as e:
-                    logger.warning(f"Keep-alive ping failed, will retry: {e}")
-                
-                # Sleep is outside the try block so it always waits before next ping
-                # even if the request fails
-                await asyncio.sleep(14 * 60)  # Every 14 minutes
+                    except Exception as e:
+                        logger.warning(f"Keep-alive ping failed, will retry: {e}")
+                    
+                    # Sleep is outside the try block so it always waits before next ping
+                    # even if the request fails
+                    await asyncio.sleep(14 * 60)  # Every 14 minutes
 
         keep_alive_task = asyncio.create_task(keep_alive_ping())
         logger.info("Keep-alive self-ping task started (every 14 min)")
@@ -193,5 +194,29 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint."""
-    return {"status": "healthy"}
+    """Health check endpoint with memory diagnostics."""
+    import sys
+    
+    # Get memory usage without psutil (works on Linux/Render)
+    mem_info = {}
+    try:
+        with open('/proc/self/status', 'r') as f:
+            for line in f:
+                if line.startswith(('VmRSS:', 'VmSize:', 'VmPeak:')):
+                    key, value = line.split(':')
+                    mem_info[key.strip()] = value.strip()
+    except (FileNotFoundError, PermissionError):
+        # Windows/macOS — fall back to basic info
+        pass
+    
+    # Cache stats
+    from app.core.cache import article_list_cache, summary_cache
+    
+    return {
+        "status": "healthy",
+        "memory": mem_info or "unavailable (non-Linux)",
+        "cache": {
+            "article_list_entries": article_list_cache.size,
+            "summary_entries": summary_cache.size,
+        },
+    }

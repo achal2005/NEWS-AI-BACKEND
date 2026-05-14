@@ -112,7 +112,7 @@ class GeminiService:
 
     MAX_RETRIES = 3
     BASE_BACKOFF = 1.0  # seconds
-    MAX_USER_LIMITERS = 10_000  # LRU eviction threshold
+    MAX_USER_LIMITERS = 500  # LRU eviction threshold (reduced from 10K for 512MB Render)
 
     def __init__(self):
         self.model = genai.GenerativeModel('gemini-2.5-flash')

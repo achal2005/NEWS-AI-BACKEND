@@ -114,7 +114,7 @@ class RSSAggregatorService:
                 if cat.lower() in cats_lower
             ]
 
-        semaphore = asyncio.Semaphore(10)
+        semaphore = asyncio.Semaphore(5)  # Reduced from 10 to limit peak memory on Render free tier
 
         async def sem_fetch(url, default_cat, max_items):
             async with semaphore:
@@ -183,7 +183,9 @@ class RSSAggregatorService:
 
                 # FIX 7: Offload synchronous feedparser to thread pool
                 loop = asyncio.get_running_loop()
-                feed = await loop.run_in_executor(None, feedparser.parse, resp.text)
+                raw_text = resp.text
+                feed = await loop.run_in_executor(None, feedparser.parse, raw_text)
+                del raw_text  # Free the raw HTTP response text immediately
                 
                 items: List[Dict[str, Any]] = []
 
@@ -192,6 +194,7 @@ class RSSAggregatorService:
                     if article and article.get("title") and article.get("content"):
                         items.append(article)
 
+                del feed  # Free feedparser DOM tree to reduce peak memory
                 logger.info(f"Fetched {len(items)} articles from {url}")
                 return items
 

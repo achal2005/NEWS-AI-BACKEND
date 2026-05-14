@@ -27,6 +27,7 @@ async def scheduled_news_refresh():
     try:
         categories = ["technology", "science", "business", "health", "sports", "entertainment", "general"]
         count = await refresh_news_from_api(categories, db)
+        db.expire_all()  # Free ORM identity map to reduce memory
         logger.info(f"Scheduled refresh complete. Fetched {count} new articles.")
     except Exception as e:
         logger.error(f"Scheduled refresh failed: {e}")
@@ -63,7 +64,7 @@ async def reconcile_missing_summaries():
             .outerjoin(subq, Article.id == subq.c.article_id)
             .filter(subq.c.article_id == None)
             .order_by(Article.ingested_at.desc())
-            .limit(20)
+            .limit(10)  # Reduced from 20 to limit peak memory during Gemini calls
             .all()
         )
 
@@ -124,7 +125,7 @@ async def refresh_leaderboard_cache():
     try:
         week_start = get_current_week_start()
 
-        # Weekly points per user
+        # Weekly points per user — single query instead of N+1
         weekly_data = (
             db.query(
                 PointsLedger.user_id,
@@ -138,6 +139,17 @@ async def refresh_leaderboard_cache():
             .all()
         )
 
+        # Pre-fetch reading times for all relevant users in ONE query
+        user_ids = [row.user_id for row in weekly_data]
+        user_reading_times = {}
+        if user_ids:
+            users = (
+                db.query(User.id, User.total_reading_time_seconds)
+                .filter(User.id.in_(user_ids))
+                .all()
+            )
+            user_reading_times = {u.id: u.total_reading_time_seconds or 0 for u in users}
+
         # Clear old cache for this week
         db.query(LeaderboardCache).filter(
             LeaderboardCache.week_start == week_start.date()
@@ -146,18 +158,19 @@ async def refresh_leaderboard_cache():
         # Rebuild
         entries = sorted(weekly_data, key=lambda r: r.weekly_points or 0, reverse=True)
         for rank, row in enumerate(entries, 1):
-            user = db.query(User).filter(User.id == row.user_id).first()
             cache_entry = LeaderboardCache(
                 user_id=row.user_id,
                 week_start=week_start.date(),
                 weekly_points=row.weekly_points or 0,
                 rank=rank,
                 articles_read=row.articles_read or 0,
-                reading_time_minutes=(user.total_reading_time_seconds or 0) // 60 if user else 0,
+                reading_time_minutes=user_reading_times.get(row.user_id, 0) // 60,
             )
             db.add(cache_entry)
 
         db.commit()
+        # Expire all objects in the session to free ORM identity map memory
+        db.expire_all()
         logger.info(f"Leaderboard cache refreshed: {len(entries)} entries.")
     except Exception as e:
         logger.error(f"Leaderboard cache refresh failed: {e}")

@@ -20,9 +20,10 @@ if db_url.startswith("sqlite"):
 else:
     engine = create_engine(
         db_url,
-        pool_size=5,
-        max_overflow=10,
-        pool_pre_ping=True,  # Auto-reconnect on stale connections
+        pool_size=3,          # Reduced from 5 to save memory on Render free tier
+        max_overflow=5,       # Reduced from 10 — each conn holds ~5-10MB
+        pool_pre_ping=True,   # Auto-reconnect on stale connections
+        pool_recycle=1800,    # Recycle connections every 30 min to prevent leaks
     )
 
 # Create session factory
