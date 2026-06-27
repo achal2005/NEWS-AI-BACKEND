@@ -80,8 +80,9 @@ class GoogleOAuthService:
             "redirect_uri": self.redirect_uri,
             "response_type": "code",
             "scope": "openid email profile",
-            "access_type": "offline",
-            "prompt": "consent",
+            # No refresh tokens are used, so `access_type=offline` + `prompt=consent`
+            # only added friction (re-showing the consent screen on every login).
+            # Omitting prompt lets Google fast-path users who already approved the app.
         }
         
         if state:

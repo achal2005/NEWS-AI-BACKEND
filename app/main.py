@@ -96,11 +96,20 @@ async def lifespan(app: FastAPI):
     # ── Keep-Alive Self-Ping (prevents Render free tier cold starts) ──
     import httpx
 
+    # Render auto-provides RENDER_EXTERNAL_URL; fall back to the hostname var.
     render_url = os.environ.get("RENDER_EXTERNAL_URL")
+    if not render_url:
+        render_host = os.environ.get("RENDER_EXTERNAL_HOSTNAME")
+        if render_host:
+            render_url = f"https://{render_host}"
     keep_alive_task = None  # R18: Store reference for cancellation
     if render_url:
         async def keep_alive_ping():
-            """Ping our own /health endpoint every 14 minutes to prevent spin-down."""
+            """Ping our own /health endpoint to prevent free-tier spin-down.
+
+            Render free idles after ~15 min with no traffic. We ping every 10 min
+            so a single missed/slow ping still leaves margin before spin-down.
+            """
             await asyncio.sleep(60)  # Wait 1 min after startup
             url = f"{render_url}/health"
             # Reuse a single client to avoid connection pool memory leaks
@@ -111,13 +120,13 @@ async def lifespan(app: FastAPI):
                         logger.info(f"Keep-alive ping: {r.status_code}")
                     except Exception as e:
                         logger.warning(f"Keep-alive ping failed, will retry: {e}")
-                    
+
                     # Sleep is outside the try block so it always waits before next ping
                     # even if the request fails
-                    await asyncio.sleep(14 * 60)  # Every 14 minutes
+                    await asyncio.sleep(10 * 60)  # Every 10 minutes (margin before 15-min idle)
 
         keep_alive_task = asyncio.create_task(keep_alive_ping())
-        logger.info("Keep-alive self-ping task started (every 14 min)")
+        logger.info("Keep-alive self-ping task started (every 10 min)")
     else:
         logger.info("RENDER_EXTERNAL_URL not set, skipping keep-alive ping")
     

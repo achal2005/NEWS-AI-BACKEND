@@ -224,6 +224,21 @@ New here? **`brain.md`** (in each repo) is a one-page map of the whole codebase.
 - **Frontend → Vercel:** `output: 'standalone'`, CSP headers, and cross-origin
   `SameSite=none; Secure` cookies wired up in `next.config.js`.
 
+### ☕ Keeping the backend awake (avoiding cold starts)
+
+Render's free tier **spins the backend down after ~15 min of inactivity**, so the first
+request after a quiet spell (typically the login flow) waits 30–60s for it to wake. The app
+ships with an internal self-ping every 10 minutes, but that can't help once the server is
+*already* asleep. To keep it warm 24/7, add a free external monitor:
+
+1. Create a free account at **[UptimeRobot](https://uptimerobot.com)** (or [cron-job.org](https://cron-job.org)).
+2. Add a new **HTTP(s)** monitor pointing at `https://<your-render-url>/health`.
+3. Set the interval to **5 minutes**.
+
+That's it — the server never idles long enough to cold-start. For a guaranteed fix with zero
+spin-down, upgrade the Render service off the free plan. If most of your users are in one
+region, also set Render's `region` (in `render.yaml`) to the nearest one to cut round-trip latency.
+
 ---
 
 ## 🗺️ Roadmap
