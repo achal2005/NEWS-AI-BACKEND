@@ -59,6 +59,8 @@ class Settings(BaseSettings):
     app_name: str = "AI News Ecosystem"
     debug: bool = False
     frontend_url: str = "http://localhost:3000"
+    environment: str = "development"
+    dev_login_enabled: bool = False
 
     @field_validator("jwt_secret_key")
     @classmethod
@@ -74,6 +76,9 @@ class Settings(BaseSettings):
     class Config:
         env_file = _find_env_file()
         case_sensitive = False
+        # Ignore unrelated keys in .env (e.g. frontend vars) instead of crashing.
+        # pydantic-settings v2 forbids unknown .env keys by default.
+        extra = "ignore"
 
 
 @lru_cache()

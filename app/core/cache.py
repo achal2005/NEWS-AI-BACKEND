@@ -83,6 +83,6 @@ class TTLCache:
         return len(self._store)
 
 
-# Singleton caches with conservative limits for Render free tier (512MB)
+# Singleton cache with conservative limits for Render free tier (512MB).
+# Article summaries are cached in the DB (ArticleSummary table), not here.
 article_list_cache = TTLCache(max_entries=50)   # ~50 cached pages max
-summary_cache = TTLCache(max_entries=100)        # ~100 cached summaries max

@@ -22,23 +22,13 @@ from app.schemas import (
 from app.services import gemini_service, news_api_service, kafka_producer
 from app.services.rss_aggregator import rss_aggregator_service
 from app.core.cache import article_list_cache
+from app.core.limiter import limiter
 
 logger = logging.getLogger(__name__)
 from app.services.gemini import GeminiQuotaError, GeminiServiceError, GeminiParseError
 from app.services.article_scraper import scrape_article_content, is_safe_url
 
 router = APIRouter(prefix="/api/news", tags=["News"])
-
-# ── FIX 5: Import limiter from main ──────────────────────────────────
-# The limiter is created in main.py and attached to app.state
-# We import it lazily via the app reference in the request
-from slowapi import Limiter
-from slowapi.util import get_remote_address
-
-
-def _get_limiter(request: Request) -> Limiter:
-    """Get the limiter instance from app state."""
-    return request.app.state.limiter
 
 
 @router.get("")
@@ -123,6 +113,7 @@ async def list_articles(
 
 
 @router.get("/refresh")
+@limiter.limit("5/hour")
 async def refresh_articles(
     request: Request,
     categories: Optional[str] = Query(None, description="Comma-separated categories"),
@@ -132,11 +123,9 @@ async def refresh_articles(
     """
     Manually refresh articles from NewsAPI.
     FIX 5: Rate-limited to 5/hour.
-    
+
     Categories: technology, science, business, health, sports, entertainment
     """
-    # FIX 5: Rate limit check
-    limiter = _get_limiter(request)
     category_list = categories.split(",") if categories else ["technology", "science", "business"]
     count = await refresh_news_from_api(categories=category_list, db=db)
     # Invalidate article list cache so new articles appear immediately
@@ -310,7 +299,7 @@ def _store_article(item: dict, fallback_category: str, db: Session) -> int:
 
     # Emit to Kafka for brand-new articles only (fire-and-forget)
     try:
-        asyncio.get_event_loop().create_task(
+        asyncio.create_task(
             kafka_producer.publish_raw_article({
                 "title": title,
                 "source_url": source_url,
@@ -340,6 +329,7 @@ async def get_available_categories():
 
 
 @router.get("/refresh-rss")
+@limiter.limit("2/hour")
 async def refresh_from_rss(
     request: Request,
     categories: Optional[str] = Query(None, description="Comma-separated categories"),
@@ -350,11 +340,9 @@ async def refresh_from_rss(
     Refresh articles from free RSS feeds only (no API key needed).
     R2: Now requires authentication to prevent unauthenticated DoS.
     FIX 5: Rate-limited to 2/hour.
-    
+
     Categories: Technology, Science, Business, Health, Sports, Entertainment, General
     """
-    # FIX 5: Rate limit check
-    limiter = _get_limiter(request)
     category_list = categories.split(",") if categories else None
     try:
         rss_items = await rss_aggregator_service.fetch_all(
@@ -446,13 +434,9 @@ async def get_article_summary(
             "[+" in content_for_summary and "chars]" in content_for_summary
         ) or len(content_for_summary) < 500
 
-        if is_truncated and hasattr(article, 'source_url') and article.source_url:
+        if is_truncated and article.source_url:
             content_for_summary = await scrape_article_content(
                 article.source_url, fallback_content=content_for_summary
-            )
-        elif is_truncated and hasattr(article, 'url') and article.url:
-            content_for_summary = await scrape_article_content(
-                article.url, fallback_content=content_for_summary
             )
 
         category = article.category or "General News"

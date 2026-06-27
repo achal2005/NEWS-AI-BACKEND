@@ -53,7 +53,7 @@ async def lifespan(app: FastAPI):
             )
 
     # R9: Warn if dev-login is enabled
-    if os.environ.get("DEV_LOGIN_ENABLED", "false").lower() == "true":
+    if settings.dev_login_enabled:
         logger.warning(
             "⚠️  WARNING: DEV_LOGIN_ENABLED=true — dev-login bypass is active! "
             "Disable this in production environments."
@@ -210,13 +210,12 @@ async def health_check():
         pass
     
     # Cache stats
-    from app.core.cache import article_list_cache, summary_cache
-    
+    from app.core.cache import article_list_cache
+
     return {
         "status": "healthy",
         "memory": mem_info or "unavailable (non-Linux)",
         "cache": {
             "article_list_entries": article_list_cache.size,
-            "summary_entries": summary_cache.size,
         },
     }

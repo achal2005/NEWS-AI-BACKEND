@@ -17,7 +17,9 @@ bcrypt>=3.2.0,<4.0.0
 aiokafka>=0.10.0
 
 # AI - Gemini
-google-generativeai>=0.3.2
+# NOTE: google-generativeai is EOL. Pinned to the last known-good release to keep
+# builds reproducible; planned migration to the `google-genai` SDK is tracked in brain.md.
+google-generativeai==0.8.6
 
 # Validation and utilities
 pydantic>=2.6.0

@@ -1,4 +1,3 @@
-import os
 from datetime import timedelta
 from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
@@ -231,8 +230,8 @@ async def dev_login(request: Request, db: Session = Depends(get_db)):
     2. ENVIRONMENT=development
     3. DEV_LOGIN_ENABLED=true (explicit opt-in, R9)
     """
-    is_development = os.environ.get("ENVIRONMENT", "development").lower() == "development"
-    dev_login_enabled = os.environ.get("DEV_LOGIN_ENABLED", "false").lower() == "true"
+    is_development = settings.environment.lower() == "development"
+    dev_login_enabled = settings.dev_login_enabled
     if not settings.debug or not is_development or not dev_login_enabled:
         raise HTTPException(status_code=404, detail="Not found")
     user = db.query(User).first()
