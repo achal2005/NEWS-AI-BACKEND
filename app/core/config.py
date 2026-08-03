@@ -61,6 +61,11 @@ class Settings(BaseSettings):
     frontend_url: str = "http://localhost:3000"
     environment: str = "development"
     dev_login_enabled: bool = False
+    # When False (default), articles are summarized ONLY on demand (when a user
+    # opens one) — the background reconcile job that pre-summarizes new articles
+    # is disabled, so it can't burn the daily Gemini quota before real requests.
+    # Enable only if you have generous/paid AI quota and want summaries pre-warmed.
+    presummarize_enabled: bool = False
 
     @field_validator("jwt_secret_key")
     @classmethod

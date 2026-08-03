@@ -202,13 +202,19 @@ def start_scheduler():
         replace_existing=True,
     )
 
-    # R12: Reconcile missing summaries every 2 hours
-    scheduler.add_job(
-        reconcile_missing_summaries,
-        IntervalTrigger(hours=2),
-        id="reconcile_summaries_2h",
-        replace_existing=True,
-    )
+    # R12: Reconcile missing summaries every 2 hours.
+    # Disabled by default: on the free Gemini tier this background pre-summarizing
+    # burns the whole daily quota, so users hit "AI quota reached" on real requests.
+    # Summaries are generated on demand (news.get_article_summary) instead.
+    from app.core.config import get_settings
+    presummarize = get_settings().presummarize_enabled
+    if presummarize:
+        scheduler.add_job(
+            reconcile_missing_summaries,
+            IntervalTrigger(hours=2),
+            id="reconcile_summaries_2h",
+            replace_existing=True,
+        )
 
     # R15: Refresh leaderboard cache every 15 minutes
     scheduler.add_job(
@@ -222,6 +228,6 @@ def start_scheduler():
     logger.info(
         "Background scheduler started ("
         "News refresh every 6h + startup, "
-        "Summary reconciliation every 2h, "
+        f"Summary reconciliation every 2h: {'ON' if presummarize else 'OFF (on-demand only)'}, "
         "Leaderboard cache every 15m)"
     )
