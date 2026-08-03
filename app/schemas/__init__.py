@@ -119,6 +119,7 @@ class SummaryRequest(BaseModel):
 
 class TasteProfileUpdate(BaseModel):
     """Schema for updating taste profile."""
+    display_name: Optional[str] = Field(None, min_length=1, max_length=50)
     preferred_categories: Optional[List[str]] = None
     summary_mode: Optional[str] = Field(None, pattern="^(kid|pro)$")
     reading_level: Optional[int] = Field(None, ge=1, le=10)
@@ -177,13 +178,21 @@ class LeaderboardResponse(BaseModel):
 # ============ Quiz Schemas ============
 
 class QuizQuestionResponse(BaseModel):
-    """Schema for quiz question response."""
+    """Schema for quiz question response.
+
+    NOTE: correct_answer is included so the quiz UI can give instant per-question
+    feedback (the client grades as you play). The server independently re-grades on
+    submit — it never trusts the client for points — so this is safe for scoring,
+    though a curious user could read answers from the network tab. For a stricter
+    anti-cheat posture, drop this field and grade each answer via a server round-trip.
+    """
     id: UUID
     question: str
     options: List[str]
+    correct_answer: str
     points_value: int
     hint: Optional[str] = None
-    
+
     class Config:
         from_attributes = True
 

@@ -7,12 +7,12 @@
 **An AI-powered news ecosystem that reads the internet so you don't have to.**
 Live RSS + NewsAPI ingestion, Gemini-generated summaries tuned to *your* reading level,
 a gamified quiz-and-leaderboard loop, and an interactive 3D globe of world headlines —
-all wrapped in a neo-zine brutalist interface.
+all wrapped in a clean, editorial risograph-inspired interface.
 
 [![Next.js](https://img.shields.io/badge/Next.js-14-000000?logo=next.js)](https://nextjs.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.128-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![Python](https://img.shields.io/badge/Python-3.14-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![Gemini](https://img.shields.io/badge/Gemini-2.5_Flash-8E75B2?logo=googlegemini&logoColor=white)](https://ai.google.dev/)
+[![Gemini](https://img.shields.io/badge/Gemini-flash--latest-8E75B2?logo=googlegemini&logoColor=white)](https://ai.google.dev/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](#-license)
 
 **NutShell ships as two repos:** 🎨 [NEWS-AI](https://github.com/achal2005/NEWS-AI) (frontend, on Vercel) · ⚙️ [NEWS-AI-BACKEND](https://github.com/achal2005/NEWS-AI-BACKEND) (backend, on Render)
@@ -61,8 +61,10 @@ pinned as *data, not instructions*, with prompt-injection sanitization on both s
 verification. The JWT lives **only** in an HttpOnly cookie — never in localStorage, never in
 a JSON body, never readable by JavaScript.
 
-🎨 **A UI with a point of view** — Neo-zine brutalist design: heavy type, a film-grain noise
-overlay, Framer Motion throughout, dark/light themes. Opinionated on purpose.
+🎨 **A UI with a point of view** — "The Daily Riso": an editorial, print-inspired design
+system on warm newsprint, with a characterful Fraunces serif masthead, a disciplined
+two-ink palette (indigo + coral), a risograph *overprint* signature, and fully responsive
+layouts from 360px phones to widescreen. Opinionated on purpose.
 
 ---
 
@@ -75,9 +77,9 @@ overlay, Framer Motion throughout, dark/light themes. Opinionated on purpose.
              │            │    dedup                      │
              │            │  • APScheduler (6h refresh,   │
              │            │    2h reconcile, 15m board)   │            ┌─────────────┐
-             │            │  • Gemini 2.5 Flash service   │ ◀── on ──▶ │   Gemini    │
-             │            │    (rate-limit + circuit      │   demand   │  2.5 Flash  │
-             │            │     breaker + retry)          │            └─────────────┘
+             │            │  • Gemini service (flash-     │ ◀── on ──▶ │   Gemini    │
+             │            │    latest, rate-limit +       │   demand   │ flash-latest│
+             │            │    circuit breaker + retry)   │            └─────────────┘
              │            │  • Google OAuth → JWT cookie  │
              │            └───────────────┬──────────────┘
    (Kafka,   │                            │ JSON over HTTPS
@@ -109,7 +111,7 @@ A few design decisions I'm proud of:
 |-------|-------|
 | **Frontend** | Next.js 14 (App Router), React 18, TypeScript, Tailwind CSS, Framer Motion, TanStack Query, Zustand, three.js / react-three-fiber |
 | **Backend** | FastAPI, SQLAlchemy 2.x, Pydantic v2, APScheduler, slowapi, BeautifulSoup, feedparser, httpx |
-| **AI** | Google Gemini 2.5 Flash |
+| **AI** | Google Gemini (`gemini-flash-latest` — auto-updating alias, override via `GEMINI_MODEL`) |
 | **Data** | SQLite (local) · PostgreSQL + psycopg v3 (prod) |
 | **Auth** | Google OAuth 2.0 → JWT in HttpOnly cookies |
 | **Infra** | Render (backend) · Vercel (frontend) · Kafka (optional) |

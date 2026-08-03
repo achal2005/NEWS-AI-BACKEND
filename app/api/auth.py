@@ -103,13 +103,14 @@ async def google_callback(
             "profile_complete": user.profile_complete,
         })
         # Cross-origin (Vercel frontend ↔ Render backend) requires
-        # SameSite=none + Secure=true. Lax only works same-origin.
+        # SameSite=none + Secure=true. Localhost (HTTP) needs Lax + not-secure.
+        is_dev = settings.debug and settings.environment.lower() == "development"
         response.set_cookie(
             key="auth_token",
             value=access_token,
             httponly=True,
-            secure=True,                # Always true (SameSite=none requires it)
-            samesite="none",            # Required for cross-origin cookies
+            secure=not is_dev,              # False on localhost (HTTP)
+            samesite="lax" if is_dev else "none",  # Lax for same-origin dev
             max_age=86400,
             path="/",
         )
@@ -212,11 +213,12 @@ async def logout():
     """
     response = JSONResponse(content={"message": "Logged out successfully"})
     # Must match the same domain/path/samesite/secure attributes used in set_cookie
+    is_dev = settings.debug and settings.environment.lower() == "development"
     response.delete_cookie(
         key="auth_token",
         path="/",
-        samesite="none",
-        secure=True,
+        samesite="lax" if is_dev else "none",
+        secure=not is_dev,
     )
     return response
 

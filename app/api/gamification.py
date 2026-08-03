@@ -440,9 +440,11 @@ async def submit_quiz(
             detail="No answers provided"
         )
     
-    # Get quiz from first question
+    # Get quiz from first question.
+    # NOTE: question_id arrives as a UUID object but QuizQuestion.id is a String(36)
+    # column — comparing the two never matches on SQLite, so cast to str.
     first_question = db.query(QuizQuestion).filter(
-        QuizQuestion.id == submission.answers[0].question_id
+        QuizQuestion.id == str(submission.answers[0].question_id)
     ).first()
     
     if not first_question:
@@ -490,7 +492,7 @@ async def submit_quiz(
     
     for answer_data in submission.answers:
         question = db.query(QuizQuestion).filter(
-            QuizQuestion.id == answer_data.question_id
+            QuizQuestion.id == str(answer_data.question_id)
         ).first()
         
         if not question:

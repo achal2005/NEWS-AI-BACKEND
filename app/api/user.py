@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db, User, TasteProfile
 from app.core.security import get_current_user_id
+from app.core.cache import article_list_cache
 from app.schemas import TasteProfileUpdate, TasteProfileResponse, UserResponse
 
 router = APIRouter(prefix="/api/user", tags=["User"])
@@ -46,6 +47,12 @@ async def update_profile(
             detail="Profile not found"
         )
     
+    # Track whether the feed-affecting fields changed so we can invalidate cache
+    categories_changed = (
+        profile_data.preferred_categories is not None
+        and profile_data.preferred_categories != profile.preferred_categories
+    )
+
     # Update only provided fields
     if profile_data.preferred_categories is not None:
         profile.preferred_categories = profile_data.preferred_categories
@@ -55,14 +62,22 @@ async def update_profile(
         profile.reading_level = profile_data.reading_level
     if profile_data.topic_weights is not None:
         profile.topic_weights = profile_data.topic_weights
-        
-    # Also update the user model if depth_preference is provided
+
+    # Update the user model for fields that live on User, not TasteProfile
     user = db.query(User).filter(User.id == user_id).first()
-    if profile_data.depth_preference is not None and user:
-        user.depth_preference = profile_data.depth_preference
-    
+    if user:
+        if profile_data.display_name is not None:
+            user.display_name = profile_data.display_name.strip()
+        if profile_data.depth_preference is not None:
+            user.depth_preference = profile_data.depth_preference
+
     db.commit()
     db.refresh(profile)
+
+    # Preferences drive the personalized feed, which is cached per-user for 5 min.
+    # Invalidate this user's cached pages so a category change is reflected at once.
+    if categories_changed:
+        article_list_cache.invalidate(f"articles:{user_id}:")
     
     # Merge depth_preference from User model into the response
     response = TasteProfileResponse.model_validate(profile)
