@@ -115,12 +115,17 @@ class GeminiService:
     MAX_USER_LIMITERS = 500  # LRU eviction threshold (reduced from 10K for 512MB Render)
 
     def __init__(self):
-        # 'gemini-flash-latest' is an auto-updating alias for the current stable
-        # flash model. Pinned versions like 'gemini-2.5-flash' get restricted to
-        # existing users over time (new API keys receive a 404), so the alias keeps
-        # this working across key rotations. Override with GEMINI_MODEL if needed.
+        # 'gemini-flash-lite-latest' is an auto-updating alias for the current
+        # stable flash-LITE model. We use the lite tier because it carries a much
+        # larger FREE daily quota than full flash ('gemini-flash-latest' currently
+        # maps to gemini-3.6-flash, ~20 requests/day free — exhausted almost
+        # instantly by on-demand summaries + quiz generation). Pinned versions like
+        # 'gemini-2.5-flash[-lite]' get restricted to existing users over time (new
+        # API keys receive a 404), so the '-latest' alias keeps this working across
+        # key rotations. Override with GEMINI_MODEL if you have paid quota and want
+        # full flash quality (e.g. GEMINI_MODEL=gemini-flash-latest).
         import os
-        model_name = os.getenv('GEMINI_MODEL', 'gemini-flash-latest')
+        model_name = os.getenv('GEMINI_MODEL', 'gemini-flash-lite-latest')
         self.model = genai.GenerativeModel(model_name)
 
         # Global rate limiter (secondary ceiling)

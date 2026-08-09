@@ -17,7 +17,7 @@ from app.schemas import (
     LeaderboardEntry, QuizResponse, QuizSubmit, QuizResultResponse
 )
 from app.services import gemini_service
-from app.services.gemini import GeminiParseError  # FIX 7
+from app.services.gemini import GeminiParseError, GeminiQuotaError, GeminiServiceError  # FIX 7
 from app.core.time_utils import get_current_week_start, get_current_week_end  # FIX 8
 
 import logging
@@ -283,12 +283,18 @@ async def get_weekly_quiz(
 
         # ── Step 4: FIX 12+15: Only call Gemini INSIDE the lock ──────
         if needs_questions and quiz:
-            # Generate questions from recent articles
+            # Generate questions from recent articles. Cap total questions and stop
+            # early once we have enough, to conserve the Gemini free-tier daily
+            # quota (each article = 1 Gemini call). 3 articles × 2 questions = 6.
+            TARGET_QUESTIONS = 6
             recent_articles = db.query(Article).order_by(
                 Article.ingested_at.desc()
-            ).limit(5).all()
+            ).limit(3).all()
 
+            generated_count = 0
             for article in recent_articles:
+                if generated_count >= TARGET_QUESTIONS:
+                    break
                 try:
                     questions = await gemini_service.generate_quiz_questions(
                         article_content=article.content,
@@ -306,9 +312,14 @@ async def get_weekly_quiz(
                             points_value=20
                         )
                         db.add(question)
+                        generated_count += 1
                 except GeminiParseError as e:
                     logger.warning(f"Quiz generation parse error for article {article.id}: {e}")
                     continue
+                except (GeminiQuotaError, GeminiServiceError) as e:
+                    # Quota/AI down — stop hammering; keep whatever we generated.
+                    logger.warning(f"Quiz generation stopped early (AI unavailable): {e}")
+                    break
                 except Exception:
                     continue
 

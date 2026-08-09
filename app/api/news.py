@@ -503,42 +503,36 @@ async def get_article_summary(
             "summary": summary_text,
             "generated_at": now
         }
-    except GeminiQuotaError as e:
+    except (GeminiQuotaError, GeminiServiceError, GeminiParseError, Exception) as e:
+        # AI is unavailable (free-tier daily quota hit, transient error, or bad
+        # response). Rather than showing a hard error on article open, degrade
+        # gracefully to a quick extractive summary so the user always sees content.
+        # The fallback is returned UN-cached, so a real AI summary is generated on
+        # the next attempt once quota is available again.
         db.rollback()
-        raise HTTPException(
-            status_code=429,
-            detail=str(e)
-        )
-    except GeminiServiceError as e:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=str(e)
-        )
-    except GeminiParseError as e:
-        # FIX 7: Return 502 for AI parse failures
-        db.rollback()
-        raise HTTPException(
-            status_code=502,
-            detail="AI returned unexpected response format"
-        )
-    except Exception as e:
-        db.rollback()
-        # Return un-cached fallback so the user still sees something
+        logger.warning(f"Summary AI unavailable ({type(e).__name__}); serving extractive fallback: {e}")
         return {
             "mode": mode,
             "summary": _fallback_summary(article.content),
-            "generated_at": datetime.now(timezone.utc)
+            "generated_at": datetime.now(timezone.utc),
+            "fallback": True,
         }
 
 
 def _fallback_summary(content: str) -> str:
-    """Extract first 3 sentences as a simple summary."""
-    sentences = [s.strip() for s in content.split('.') if s.strip()]
+    """Extract first 3 sentences as a simple summary.
+
+    Used when the Gemini AI is unavailable (e.g. free-tier daily quota hit) so the
+    user still gets a readable preview instead of an error. Prefixed with a short
+    note so it's clear this is not the full AI-generated brief.
+    """
+    note = "📄 Quick preview (AI summary will refresh once daily quota resets):\n\n"
+    sentences = [s.strip() for s in (content or "").split('.') if s.strip()]
     if not sentences:
         return "Summary is being generated. Please try again shortly."
     text = ". ".join(sentences[:3]) + "."
-    return text[:500] if len(text) <= 500 else text[:497] + "..."
+    body = text if len(text) <= 500 else text[:497] + "..."
+    return note + body
 
 
 @router.post("/{article_id}/regenerate-summary", response_model=ArticleSummaryResponse)
